@@ -51,3 +51,14 @@ def like(values, pattern: str) -> np.ndarray:
         flags=re.DOTALL)
     return np.fromiter((regex.fullmatch(v) is not None for v in values),
                        dtype=bool, count=len(values))
+
+
+def take_or_null(values: np.ndarray, ok, idx: np.ndarray):
+    """values[idx] where idx == -1 means "no row" (LEFT JOIN padding) and yields NULL."""
+    present = idx >= 0
+    if len(values) == 0:  # nothing to take from: every slot is padding
+        filler = "" if values.dtype == object else 0  # NULL slots must stay comparable
+        return np.full(len(idx), filler, dtype=values.dtype), np.zeros(len(idx), dtype=bool)
+    safe = np.where(present, idx, 0)
+    ok_taken = present if ok is None else (ok[safe] & present)
+    return values[safe], ok_taken

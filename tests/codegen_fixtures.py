@@ -227,3 +227,114 @@ SINGLE_TABLE_PLANS = {
                 exprs=[(col("id", "orders"), "id"), (col("cust_id", "orders"), "cust")]),
         "SELECT orders.id, orders.cust_id AS cust FROM orders WHERE orders.total > 6"),
 }
+
+
+# ---------------------------------------------------------------- Phase C4 corpus
+
+PAYMENTS = Table.from_pydict(
+    {"order_id": [100, 100, 101, 103, None, 999],
+     "amt":      [5, 4, 7, 11, 3, 1],
+     "method":   ["card", "cash", "card", None, "cash", "card"]},
+    [("order_id", DType.INT), ("amt", DType.INT), ("method", DType.STRING)],
+)
+TABLES["payments"] = PAYMENTS
+
+
+def _agg(func, arg=None):
+    return AggCall(func, arg)
+
+
+def _orders_payments(kind, extra=None):
+    cond = op("=", col("id", "orders"), col("order_id", "payments"))
+    if extra is not None:
+        cond = op("AND", cond, extra)
+    return Join(left=scan("orders"), right=scan("payments"), condition=cond, kind=kind)
+
+
+# name -> (plan, ordered?)
+JOIN_AGG_PLANS = {
+    "three_way_join": (
+        Join(left=orders_join_customer("inner"), right=scan("payments"),
+             condition=op("=", col("id", "orders"), col("order_id", "payments")), kind="inner"),
+        False),
+    "three_way_left_joins": (
+        Join(left=orders_join_customer("left"), right=scan("payments"),
+             condition=op("=", col("id", "orders"), col("order_id", "payments")), kind="left"),
+        False),
+    "multi_key_join": (
+        _orders_payments("inner", op("=", col("total", "orders"), col("amt", "payments"))), False),
+    "join_key_expression": (
+        Join(left=scan("orders"), right=scan("payments"), kind="inner",
+             condition=op("=", op("+", col("id", "orders"), lit(0)), col("order_id", "payments"))),
+        False),
+    "join_residual_inner": (
+        _orders_payments("inner", op("<", col("amt", "payments"), col("total", "orders"))), False),
+    "join_residual_left_pads_when_residual_fails": (
+        _orders_payments("left", op("<", col("amt", "payments"), col("total", "orders"))), False),
+    "left_join_empty_right": (
+        Join(left=scan("orders"), right=Filter(child=scan("payments"),
+                                               predicate=op(">", col("amt"), lit(100))),
+             condition=op("=", col("id", "orders"), col("order_id", "payments")), kind="left"),
+        False),
+    "inner_join_empty_left": (
+        Join(left=Filter(child=scan("orders"), predicate=op(">", col("total"), lit(100))),
+             right=scan("payments"), kind="inner",
+             condition=op("=", col("id", "orders"), col("order_id", "payments"))),
+        False),
+    "non_equi_only_join": (
+        Join(left=scan("customer"), right=scan("orders"), kind="inner",
+             condition=op("<", col("id", "customer"), col("cust_id", "orders"))),
+        False),
+    "join_limit_without_sort_keeps_interpreter_order": (
+        Limit(child=_orders_payments("left"), n=3), True),
+    "multi_key_group_by": (
+        Aggregate(child=scan("sales"), group_keys=[col("region"), op(">", col("qty"), lit(3))],
+                  aggs=[(_agg("count"), "n"), (_agg("sum", col("qty")), "s"),
+                        (_agg("avg", col("amount")), "a"), (_agg("min", col("day")), "first_day"),
+                        (_agg("max", col("region")), "max_region")]),
+        False),
+    "group_by_expression_having_order": (
+        Sort(child=Filter(
+            child=Aggregate(child=scan("sales"), group_keys=[op("%", col("qty"), lit(2))],
+                            aggs=[(_agg("sum", col("amount")), "s"), (_agg("count"), "n")]),
+            predicate=op(">", _agg("count"), lit(1))),
+            keys=[(_agg("sum", col("amount")), True), (op("%", col("qty"), lit(2)), False)]),
+        True),
+    "aggregate_over_left_join_counts": (
+        Aggregate(child=_orders_payments("left"), group_keys=[col("id", "orders")],
+                  aggs=[(_agg("count"), "rows"), (_agg("count", col("amt", "payments")), "paid"),
+                        (_agg("sum", col("amt", "payments")), "amount"),
+                        (_agg("max", col("method", "payments")), "method")]),
+        False),
+    "global_aggregates_all_kinds": (
+        Aggregate(child=scan("sales"), group_keys=[], aggs=[
+            (_agg("count"), "n"), (_agg("count", col("amount")), "na"),
+            (_agg("sum", col("qty")), "sq"), (_agg("avg", col("qty")), "aq"),
+            (_agg("min", col("region")), "lo"), (_agg("max", col("day")), "hi"),
+            (_agg("sum", col("amount")), "sa")]),
+        False),
+    "global_aggregate_all_null_input": (
+        Aggregate(child=Filter(child=scan("sales"), predicate=UnaryOp(op="IS NULL", operand=col("amount"))),
+                  group_keys=[], aggs=[(_agg("sum", col("amount")), "s"), (_agg("avg", col("amount")), "a"),
+                                       (_agg("min", col("amount")), "m"), (_agg("count", col("amount")), "c")]),
+        False),
+    "global_aggregate_over_false_filter": (
+        Aggregate(child=Filter(child=scan("sales"), predicate=lit(False, DType.BOOL)),
+                  group_keys=[], aggs=[(_agg("count"), "n"), (_agg("max", col("qty")), "m")]),
+        False),
+    "sort_mixed_directions_with_nulls": (
+        Sort(child=scan("sales"), keys=[(col("region"), True), (col("amount"), False)]), True),
+    "sort_on_computed_expression_stable_ties": (
+        Sort(child=scan("sales"), keys=[(op("%", col("qty"), lit(3)), False)]), True),
+    "sort_strings_and_dates": (
+        Sort(child=scan("payments"), keys=[(col("method"), False), (col("amt"), True)]), True),
+    "limit_zero_and_overflow": (
+        Limit(child=Limit(child=Sort(child=scan("sales"), keys=[(col("id"), True)]), n=100), n=0), True),
+    "top_n_per_joined_aggregate": (
+        Limit(child=Sort(child=Project(
+            child=Aggregate(child=orders_join_customer("inner"), group_keys=[col("name", "customer")],
+                            aggs=[(_agg("avg", col("total", "orders")), "avg_total")]),
+            exprs=[(col("name"), "name"), (op("*", col("avg_total"), lit(2)), "dbl")]),
+            keys=[(col("dbl"), True)]), n=2),
+        True),
+}

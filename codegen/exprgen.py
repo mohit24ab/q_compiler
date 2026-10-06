@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from runtime.expr_eval import Scope, _norm, infer_dtype, node_kind, render_expr
+from runtime.expr_eval import Scope, _norm, expr_key, infer_dtype, node_kind, render_expr
 from runtime.table import find_columns
 
 
@@ -49,11 +49,17 @@ class CVar:
 
 
 class Rel:
-    """A relation at generation time: its columns and the expression for its row count."""
+    """A relation at generation time: its columns and the expression for its row count.
 
-    def __init__(self, columns: list[CVar], n: str):
+    `expr_columns` maps already-computed expressions (an Aggregate's `sum(x)`, a computed
+    group key) to the column holding them — the same map the interpreter keeps, so
+    `HAVING sum(x) > 10` above an Aggregate reads the Aggregate's output column.
+    """
+
+    def __init__(self, columns: list[CVar], n: str, expr_columns: dict[str, int] | None = None):
         self.columns = columns
         self.n = n
+        self.expr_columns = expr_columns or {}
 
     def find(self, name, table=None):
         return find_columns(self.columns, name, table)
@@ -141,7 +147,7 @@ class ExprGen:
     def __init__(self, em, rel: Rel, load=None):
         self.em = em
         self.rel = rel
-        self.scope = Scope(rel)
+        self.scope = Scope(rel, rel.expr_columns)
         self.load = load  # callback(CVar) that emits code loading a lazy column
         self.scalar_temps: set[str] = set()
 
@@ -173,13 +179,16 @@ class ExprGen:
         if kind == "Literal":
             return self.code(literal_src(expr.value, expr.dtype),
                              "False" if expr.value is None else "True")
+        computed = self.rel.expr_columns.get(expr_key(expr))
+        if computed is not None:  # e.g. sum(x) produced by the Aggregate below
+            col = self.rel.columns[computed]
+            return self.code(col.v, col.ok)
         if kind == "UnaryOp":
             return self._unary(expr)
         if kind == "BinaryOp":
             return self._binary(expr)
         if kind == "AggCall":
-            raise CodegenError(f"aggregate {render_expr(expr)} outside an Aggregate "
-                               f"(aggregates are compiled in Phase C4)")
+            raise CodegenError(f"aggregate {render_expr(expr)} is not produced by an Aggregate below")
         raise CodegenError(f"cannot compile {kind}")
 
     # ---------------------------------------------------------------- unary
@@ -276,3 +285,28 @@ def _is_constant(src: str) -> bool:
         return False
     return src.startswith(("np.True_", "np.False_", "np.datetime64(", "float(", "'", '"')) \
         or src.lstrip("-").replace(".", "", 1).isdigit()
+
+
+def column_refs(expr) -> list:
+    """Every ColumnRef inside `expr` (empty for None)."""
+    if expr is None:
+        return []
+    kind = node_kind(expr)
+    if kind == "ColumnRef":
+        return [expr]
+    if kind == "Literal":
+        return []
+    if kind == "UnaryOp":
+        return column_refs(expr.operand)
+    if kind == "BinaryOp":
+        return column_refs(expr.left) + column_refs(expr.right)
+    if kind == "AggCall":
+        return column_refs(expr.arg)
+    raise CodegenError(f"cannot inspect {kind}")
+
+
+def conjuncts(expr) -> list:
+    """Split `a AND b AND c` into [a, b, c]."""
+    if expr is not None and node_kind(expr) == "BinaryOp" and _norm(expr.op) == "AND":
+        return conjuncts(expr.left) + conjuncts(expr.right)
+    return [] if expr is None else [expr]

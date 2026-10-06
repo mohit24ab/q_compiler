@@ -11,11 +11,11 @@ Every generated module has the same outer shape:
 
 Two modes:
   * compiled     — real numpy code, one commented section per operator (codegen/operators.py).
-                   Used whenever every node in the plan has a compiler (Phase C3: Scan,
-                   Filter, Project).
+                   Every plan node has a compiler (Phase C3: Scan, Filter, Project;
+                   Phase C4: Join, Aggregate, Sort, Limit).
   * passthrough  — the body rebuilds the plan as constructor calls and hands it to the
-                   reference interpreter. Used for plans the compiler can't handle yet,
-                   and selectable with mode="passthrough" for comparisons.
+                   reference interpreter. Only used when asked for with mode="passthrough",
+                   e.g. to measure what compilation buys in the benchmarks.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def generate(plan, catalog=None, mode: str = "auto") -> str:
     return _generate_compiled(plan, catalog)
 
 
-_HELPERS = ("as_table", "read_column", "build_table", "like")
+_HELPERS = ("as_table", "read_column", "build_table", "like", "take_or_null")
 
 
 def _generate_compiled(plan, catalog) -> str:

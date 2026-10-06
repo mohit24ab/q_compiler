@@ -70,7 +70,7 @@ def test_generated_module_runs_in_an_empty_namespace():
     """Self-contained: needs nothing from the caller except `tables`."""
     plan, _ = SAMPLE_PLANS["canonical_naive"]
     ns = {}
-    exec(compile(generate(plan), "<t>", "exec"), ns)
+    exec(compile(generate(plan, CATALOG), "<t>", "exec"), ns)
     assert ns["run"](TABLES).to_rows() == [("ann", 9)]
 
 
@@ -78,7 +78,7 @@ def test_generated_module_runs_in_an_empty_namespace():
 def test_passthrough_output_matches_interpreter(name):
     plan, ordered = SAMPLE_PLANS[name]
     expected = interpret(plan, TABLES)
-    actual = compile_and_run(generate(plan, CATALOG), TABLES)
+    actual = compile_and_run(generate(plan, CATALOG, mode="passthrough"), TABLES)
     ok, why = compare_tables(expected, actual, ordered=ordered)
     assert ok, why
 
@@ -87,7 +87,7 @@ def test_emitted_plan_round_trips_to_an_equal_plan():
     plan, _ = SAMPLE_PLANS["canonical_naive"]
     ns = {}
     # `return interpret(root, tables)` -> `return (root, tables)`: hand back the rebuilt plan
-    src = generate(plan).replace("return interpret(", "return (")
+    src = generate(plan, mode="passthrough").replace("return interpret(", "return (")
     exec(compile(src, "<t>", "exec"), ns)
     rebuilt, _ = ns["run"](TABLES)
     assert rebuilt == plan

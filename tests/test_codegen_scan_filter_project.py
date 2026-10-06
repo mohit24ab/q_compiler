@@ -49,11 +49,10 @@ def test_auto_mode_matches_interpreter_on_whole_corpus(name):
     assert_matches_interpreter(plan, generate(plan, CATALOG), ordered=ordered)
 
 
-def test_auto_mode_compiles_exactly_the_scan_filter_project_plans():
-    assert "mode: compiled" in generate(SAMPLE_PLANS["filter_null_drop"][0], CATALOG)
-    assert "mode: passthrough" in generate(SAMPLE_PLANS["inner_join"][0], CATALOG)
-    with pytest.raises(CodegenError, match="not compiled yet"):
-        generate(orders_join_customer(), CATALOG, mode="compiled")
+def test_every_corpus_plan_compiles_since_phase_c4():
+    for name, (plan, _) in SAMPLE_PLANS.items():
+        assert "mode: compiled" in generate(plan, CATALOG), name
+    assert "mode: passthrough" in generate(orders_join_customer(), CATALOG, mode="passthrough")
 
 
 def test_passthrough_mode_still_available_for_comparisons():
