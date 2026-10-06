@@ -54,6 +54,12 @@ def _collect(x: Any, found: set[Ref]) -> None:
         raise TypeError(f"cannot find column references inside {type(x).__name__}: {x!r}")
 
 
+def resolves(ref: Ref, column: Ref) -> bool:
+    """Strict name resolution, the reference evaluator's rule: the names match, and so do the qualifiers if ``ref`` has one."""
+    (rq, rn), (cq, cn) = ref, column
+    return rn == cn and (rq is None or rq == cq)
+
+
 def scanned_tables(plan: Any) -> set[str]:
     """Return the names of every table the plan scans."""
     if isinstance(plan, Scan):

@@ -24,6 +24,34 @@ from optimizer.cardinality_report import cell, compare, detail_table, summarize,
 OUT = Path(__file__).parent.parent / "docs" / "cardinality_estimates.md"
 
 
+# Why each suite query that can appear among the worst estimates is off. The
+# report refuses to list a worst case nobody has explained.
+CAUSES = {
+    "having_on_aggregate": "the HAVING predicate reads a SUM, which has no statistics, so it gets System R's 1/3.",
+    "having_splits_on_group_key": "the HAVING predicate reads a SUM, which has no statistics, so it gets "
+                                  "System R's 1/3.",
+    "left_join_is_null_must_not_push": "it counts customers with no orders, which containment says do not "
+                                       "exist: `orders.o_custkey` and `customer.c_id` have the same number "
+                                       "of distinct values, but not the same values.",
+    "five_way_join_in_a_bad_order": "four joins, each a little off, and the errors multiply.",
+    "forced_cross_product": "a cross product multiplies the errors of its inputs: two of the five nations "
+                            "are in AMERICA (1.25 expected), and three employees work in a department with "
+                            "a budget over 500 (2.1 expected).",
+    "filter_through_project_over_join": "containment again: `orders.o_custkey` includes the keys 13 and 14, "
+                                        "which no customer has.",
+    "filter_through_three_way_join": "two of the five nations are in AMERICA, against 1.25 expected.",
+    "three_relation_conjunct": "the comparison across three tables has no statistics, so it gets "
+                               "System R's 1/3.",
+    "nine_way_chain": "eight joins over 6-row tables whose keys are random rather than uniform.",
+}
+
+
+def _cause(query: str) -> str:
+    if query not in CAUSES:
+        raise KeyError(f"{query} is among the worst estimates: add the reason to CAUSES")
+    return CAUSES[query]
+
+
 def counter(tables):
     return lambda node: len(evaluate(node, tables).rows)
 
@@ -118,10 +146,9 @@ def render() -> str:
         "",
         detail_table(worst, indent=False),
         "",
-        "The two recurring causes: `having_on_aggregate` and `having_splits_on_group_key` filter on a",
-        "SUM, which has no statistics (the 1/3 default); and `left_join_is_null_must_not_push` counts",
-        "customers with no orders, which the containment assumption says do not exist, because",
-        "`orders.o_custkey` and `customer.c_id` have the same number of distinct values.",
+        f"Every node in that list returns {max(r.actual for r in worst)} rows or fewer. Why each query is off:",
+        "",
+        *[f"* `{name}`: {_cause(name)}" for name in dict.fromkeys(r.query for r in worst)],
         "",
         "<details><summary>Every node of every query</summary>",
         "",

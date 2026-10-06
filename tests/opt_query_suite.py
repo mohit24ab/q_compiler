@@ -45,6 +45,12 @@ SCHEMAS: dict[str, list[tuple[str, DType]]] = {
     "nation": [("n_id", DType.INT), ("n_name", DType.STRING), ("n_region", DType.STRING)],
     "emp": [("id", DType.INT), ("name", DType.STRING), ("dept_id", DType.INT), ("salary", DType.FLOAT)],
     "dept": [("id", DType.INT), ("name", DType.STRING), ("budget", DType.FLOAT)],
+    "lineitem": [
+        ("l_id", DType.INT), ("l_orderkey", DType.INT), ("l_qty", DType.INT), ("l_price", DType.FLOAT),
+    ],
+    "region": [("r_name", DType.STRING), ("r_comment", DType.STRING)],
+    # k1 .. k9: a chain of tables, k<i>_next referencing k<i+1>_id (join reordering past the DP limit)
+    **{f"k{i}": [(f"k{i}_id", DType.INT), (f"k{i}_next", DType.INT)] for i in range(1, 10)},
 }
 
 
@@ -88,6 +94,17 @@ def _make_tables() -> dict[str, tuple[list[str], list[tuple]]]:
         (4, "dee", 30, 70.0), (5, "eve", 99, 50.0),
     ]
     rows["dept"] = [(10, "eng", 1000.0), (20, "ops", 400.0), (30, "sales", 600.0)]
+    # Added for B6, from their own generator so the tables above stay as they were.
+    rng = random.Random(6)
+    # Orders 41 and 42 do not exist.
+    rows["lineitem"] = [
+        (i, rng.randint(1, 42), rng.randint(1, 50), round(rng.uniform(1, 100), 2)) for i in range(1, 81)
+    ]
+    # OCEANIA has no nations.
+    rows["region"] = [("EUROPE", "old world"), ("AMERICA", "new world"), ("ASIA", "far east"),
+                      ("AFRICA", "the cradle"), ("OCEANIA", "islands")]
+    for i in range(1, 10):
+        rows[f"k{i}"] = [(j, rng.randint(1, 6)) for j in range(1, 7)]
     return {t: ([name for name, _ in SCHEMAS[t]], rows[t]) for t in SCHEMAS}
 
 
@@ -643,3 +660,117 @@ def null_and_in_select_must_stay():
 def reordering_project_must_stay():
     """SELECT name, id, dept_id, salary FROM emp   -- every column, but not in table order"""
     return project(scan("emp"), *keep("name", "id", "dept_id", "salary"))
+
+
+# --------------------------------------------------------------------------
+# Join reordering (B6)
+# --------------------------------------------------------------------------
+
+
+@query
+def five_way_join_in_a_bad_order():
+    """SELECT l_id, c_name FROM lineitem JOIN orders ON l_orderkey = o_id JOIN customer ON o_custkey = c_id
+    JOIN nation ON c_nationkey = n_id JOIN region ON n_region = r_name WHERE r_name = 'ASIA'"""
+    j = join(scan("lineitem"), scan("orders"), op("=", col("l_orderkey"), col("o_id")))
+    j = join(j, scan("customer"), op("=", col("o_custkey"), col("c_id")))
+    j = join(j, scan("nation"), op("=", col("c_nationkey"), col("n_id")))
+    j = join(j, scan("region"), op("=", col("n_region"), col("r_name")))
+    return project(Filter(child=j, predicate=op("=", col("r_name"), lit("ASIA"))), *keep("l_id", "c_name"))
+
+
+@query
+def comma_join_with_a_cross_product():
+    """SELECT o_id, n_name FROM orders, nation, customer WHERE o_custkey = c_id AND c_nationkey = n_id
+    -- in FROM order, orders and nation are joined first, and nothing links them"""
+    j = join(join(scan("orders"), scan("nation"), lit(True)), scan("customer"), lit(True))
+    pred = op("AND", op("=", col("o_custkey"), col("c_id")), op("=", col("c_nationkey"), col("n_id")))
+    return project(Filter(child=j, predicate=pred), *keep("o_id", "n_name"))
+
+
+@query
+def forced_cross_product():
+    """SELECT emp.name AS emp_name, n_name FROM emp JOIN dept ON emp.dept_id = dept.id, nation
+    WHERE n_region = 'AMERICA' AND dept.budget > 500.0   -- nation links to nothing"""
+    ed = join(scan("emp"), scan("dept"), op("=", col("dept_id", "emp"), col("id", "dept")))
+    j = join(scan("nation"), ed, lit(True))
+    pred = op("AND", op("=", col("n_region"), lit("AMERICA")), op(">", col("budget", "dept"), lit(500.0)))
+    return project(Filter(child=j, predicate=pred), (col("name", "emp"), "emp_name"), (col("n_name"), "n_name"))
+
+
+@query
+def three_relation_conjunct():
+    """SELECT o_id FROM orders JOIN customer ON o_custkey = c_id JOIN nation ON c_nationkey = n_id
+    WHERE o_total > c_balance + n_id * 100.0   -- one conjunct reads all three tables"""
+    j = join(join(scan("orders"), scan("customer"), op("=", col("o_custkey"), col("c_id"))),
+             scan("nation"), op("=", col("c_nationkey"), col("n_id")))
+    pred = op(">", col("o_total"), op("+", col("c_balance"), op("*", col("n_id"), lit(100.0))))
+    return project(Filter(child=j, predicate=pred), *keep("o_id"))
+
+
+@query
+def join_region_under_aggregate():
+    """SELECT r_name, SUM(l_price) AS revenue FROM lineitem JOIN orders ON l_orderkey = o_id
+    JOIN customer ON o_custkey = c_id JOIN nation ON c_nationkey = n_id JOIN region ON n_region = r_name
+    WHERE o_status = 'F' GROUP BY r_name"""
+    j = join(scan("lineitem"), scan("orders"), op("=", col("l_orderkey"), col("o_id")))
+    j = join(j, scan("customer"), op("=", col("o_custkey"), col("c_id")))
+    j = join(j, scan("nation"), op("=", col("c_nationkey"), col("n_id")))
+    j = join(j, scan("region"), op("=", col("n_region"), col("r_name")))
+    f = Filter(child=j, predicate=op("=", col("o_status"), lit("F")))
+    return Aggregate(child=f, group_keys=[col("r_name")], aggs=[(agg("sum", col("l_price")), "revenue")])
+
+
+@query
+def join_region_inside_left_join():
+    """SELECT r_name, c_name, o_id FROM region LEFT JOIN
+    (orders JOIN customer ON o_custkey = c_id JOIN nation ON c_nationkey = n_id) ON r_name = n_region
+    -- OCEANIA has no nations, so it is padded with NULLs"""
+    inner = join(join(scan("orders"), scan("customer"), op("=", col("o_custkey"), col("c_id"))),
+                 scan("nation"), op("=", col("c_nationkey"), col("n_id")))
+    j = join(scan("region"), inner, op("=", col("r_name"), col("n_region")), kind="left")
+    return project(j, *keep("r_name", "c_name", "o_id"))
+
+
+@query
+def left_join_inside_join_region():
+    """SELECT c_name, o_id, n_name, r_comment FROM customer LEFT JOIN orders ON c_id = o_custkey
+    JOIN nation ON c_nationkey = n_id JOIN region ON n_region = r_name
+    -- the LEFT join is one leaf of the inner region; customers 11 and 12 keep their NULL orders"""
+    left = join(scan("customer"), scan("orders"), op("=", col("c_id"), col("o_custkey")), kind="left")
+    j = join(join(left, scan("nation"), op("=", col("c_nationkey"), col("n_id"))),
+             scan("region"), op("=", col("n_region"), col("r_name")))
+    return project(j, *keep("c_name", "o_id", "n_name", "r_comment"))
+
+
+@query
+def nested_join_regions():
+    """SELECT n_name, revenue FROM (SELECT c_nationkey, SUM(l_price) AS revenue FROM lineitem
+    JOIN orders ON l_orderkey = o_id JOIN customer ON o_custkey = c_id WHERE c_segment = 'AUTO'
+    GROUP BY c_nationkey) JOIN nation ON c_nationkey = n_id JOIN region ON n_region = r_name
+    WHERE r_name = 'AMERICA'   -- a join tree inside a leaf of another"""
+    inner = join(join(scan("lineitem"), scan("orders"), op("=", col("l_orderkey"), col("o_id"))),
+                 scan("customer"), op("=", col("o_custkey"), col("c_id")))
+    grouped = Aggregate(child=Filter(child=inner, predicate=op("=", col("c_segment"), lit("AUTO"))),
+                        group_keys=[col("c_nationkey")], aggs=[(agg("sum", col("l_price")), "revenue")])
+    outer = join(join(grouped, scan("nation"), op("=", col("c_nationkey"), col("n_id"))),
+                 scan("region"), op("=", col("n_region"), col("r_name")))
+    return project(Filter(child=outer, predicate=op("=", col("r_name"), lit("AMERICA"))),
+                   *keep("n_name", "revenue"))
+
+
+@query
+def nine_way_chain():
+    """SELECT k1_id, k9_next FROM k1 JOIN k2 ON k1_next = k2_id ... JOIN k9 ON k8_next = k9_id WHERE k9_id = 2"""
+    j = scan("k1")
+    for i in range(2, 10):
+        j = join(j, scan(f"k{i}"), op("=", col(f"k{i - 1}_next"), col(f"k{i}_id")))
+    return project(Filter(child=j, predicate=op("=", col("k9_id"), lit(2))), *keep("k1_id", "k9_next"))
+
+
+@query
+def join_output_order_is_the_result():
+    """SELECT * FROM lineitem JOIN orders ON l_orderkey = o_id JOIN customer ON o_custkey = c_id
+    WHERE c_segment = 'AUTO'   -- no Project: the join's column order is the result's"""
+    j = join(join(scan("lineitem"), scan("orders"), op("=", col("l_orderkey"), col("o_id"))),
+             scan("customer"), op("=", col("o_custkey"), col("c_id")))
+    return Filter(child=j, predicate=op("=", col("c_segment"), lit("AUTO")))
