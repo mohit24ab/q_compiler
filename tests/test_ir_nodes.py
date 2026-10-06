@@ -181,3 +181,34 @@ def test_unary_op_is_null_format_and_type_inference():
     assert _infer_expr_dtype(UnaryOp(op="IS NOT NULL", operand=col_x), child_schema) == DType.BOOL
     assert _infer_expr_dtype(UnaryOp(op="IS_NULL", operand=col_x), child_schema) == DType.BOOL
     assert _infer_expr_dtype(UnaryOp(op="IS_NOT_NULL", operand=col_x), child_schema) == DType.BOOL
+
+
+def test_printer_parentheses_precedence():
+    x = ColumnRef(table=None, name="x")
+    y = ColumnRef(table=None, name="y")
+    z = ColumnRef(table=None, name="z")
+    a = ColumnRef(table=None, name="a")
+    b = ColumnRef(table=None, name="b")
+    c = ColumnRef(table=None, name="c")
+
+    # BinaryOp("AND", BinaryOp("OR", x, y), z) formats as (x OR y) AND z
+    assert format_expr(BinaryOp("AND", BinaryOp("OR", x, y), z)) == "(x OR y) AND z"
+
+    # BinaryOp("AND", z, BinaryOp("OR", x, y)) formats as z AND (x OR y)
+    assert format_expr(BinaryOp("AND", z, BinaryOp("OR", x, y))) == "z AND (x OR y)"
+
+    # BinaryOp("*", BinaryOp("+", x, y), z) formats as (x + y) * z
+    assert format_expr(BinaryOp("*", BinaryOp("+", x, y), z)) == "(x + y) * z"
+
+    # BinaryOp("-", a, BinaryOp("-", b, c)) formats as a - (b - c)
+    assert format_expr(BinaryOp("-", a, BinaryOp("-", b, c))) == "a - (b - c)"
+
+    # Standard unparenthesized expressions like x AND y and x * y + z format cleanly without unnecessary double parentheses
+    assert format_expr(BinaryOp("AND", x, y)) == "x AND y"
+    assert format_expr(BinaryOp("+", BinaryOp("*", x, y), z)) == "x * y + z"
+    assert format_expr(BinaryOp("+", x, BinaryOp("*", y, z))) == "x + y * z"
+    assert format_expr(BinaryOp("-", BinaryOp("-", a, b), c)) == "a - b - c"
+
+    # Unary NOT wraps BinaryOp in parentheses
+    assert format_expr(UnaryOp("NOT", BinaryOp("AND", x, y))) == "NOT (x AND y)"
+    assert format_expr(UnaryOp("NOT", x)) == "NOT x"

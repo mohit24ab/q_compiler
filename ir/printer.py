@@ -5,6 +5,43 @@ from ir.expr import AggCall, BinaryOp, ColumnRef, Expr, Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, PlanNode, Project, Scan, Sort
 
 
+OPERATOR_PRECEDENCE: dict[str, int] = {
+    "OR": 1,
+    "AND": 2,
+    "=": 3,
+    "!=": 3,
+    "<>": 3,
+    "<": 3,
+    ">": 3,
+    "<=": 3,
+    ">=": 3,
+    "+": 4,
+    "-": 4,
+    "*": 5,
+    "/": 5,
+    "%": 5,
+}
+
+_PRECEDENCE = OPERATOR_PRECEDENCE
+_NON_ASSOCIATIVE_OPS: set[str] = {"-", "/"}
+
+
+def _get_precedence(op: str) -> int:
+    return OPERATOR_PRECEDENCE.get(op.strip().upper(), 0)
+
+
+def _format_child(child: Expr, parent_op: str, is_right: bool) -> str:
+    formatted = format_expr(child)
+    if isinstance(child, BinaryOp):
+        child_prec = _get_precedence(child.op)
+        parent_prec = _get_precedence(parent_op)
+        if child_prec < parent_prec:
+            return f"({formatted})"
+        if is_right and parent_op.strip() in _NON_ASSOCIATIVE_OPS and child_prec == parent_prec:
+            return f"({formatted})"
+    return formatted
+
+
 def format_expr(expr: Expr) -> str:
     """Formats an expression node into a clean string representation."""
     if isinstance(expr, ColumnRef):
@@ -18,11 +55,15 @@ def format_expr(expr: Expr) -> str:
         return str(expr.value)
 
     if isinstance(expr, BinaryOp):
-        return f"{format_expr(expr.left)} {expr.op} {format_expr(expr.right)}"
+        left_str = _format_child(expr.left, expr.op, is_right=False)
+        right_str = _format_child(expr.right, expr.op, is_right=True)
+        return f"{left_str} {expr.op} {right_str}"
 
     if isinstance(expr, UnaryOp):
         op_norm = " ".join(expr.op.strip().upper().replace("_", " ").split())
         if op_norm == "NOT":
+            if isinstance(expr.operand, BinaryOp):
+                return f"NOT ({format_expr(expr.operand)})"
             return f"NOT {format_expr(expr.operand)}"
         if op_norm == "IS NULL":
             return f"{format_expr(expr.operand)} IS NULL"
