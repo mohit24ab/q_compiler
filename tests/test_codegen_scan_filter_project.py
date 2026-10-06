@@ -181,3 +181,40 @@ def test_fuzz_project_and_filter_match_interpreter(seed):
     project = Project(child=scan("sales"), exprs=[(num, "n"), (cond, "b"), (col("id"), "id")])
     assert_matches_interpreter(project)
     assert_matches_interpreter(Filter(child=scan("sales"), predicate=cond))
+
+
+# ------------------------------------------------------------------ constant FALSE / NULL predicates
+# Asked by Person B for constant folding (B4): a Filter whose predicate folds to FALSE
+# returns an empty table with the child's schema, and the child is never executed.
+
+def _never_true_plans():
+    computed = Project(child=scan("sales"), exprs=[
+        (col("id"), "id"), (op("/", col("qty"), lit(2)), "half"), (lit("x", DType.STRING), "tag")])
+    return {
+        "filter_false_over_scan": Filter(child=scan("sales"), predicate=lit(False, DType.BOOL)),
+        "filter_null_over_computed_project": Filter(child=computed, predicate=lit(None, DType.BOOL)),
+        "scan_pushed_false": scan("sales", columns=["day", "id"], pred=lit(False, DType.BOOL)),
+        "false_below_project_and_filter": Project(
+            child=Filter(child=Filter(child=scan("orders"), predicate=lit(False, DType.BOOL)),
+                         predicate=op(">", col("total"), lit(1))),
+            exprs=[(op("*", col("total"), lit(2)), "dbl")]),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_never_true_plans()))
+def test_never_true_predicate_returns_empty_table_with_childs_schema(name):
+    plan = _never_true_plans()[name]
+    expected = interpret(plan, TABLES)
+    actual = compile_and_run(compiled(plan), TABLES)
+    assert actual.num_rows == 0
+    assert actual.schema == expected.schema
+    assert actual.qualified_names() == expected.qualified_names()
+
+
+@pytest.mark.parametrize("name", sorted(_never_true_plans()))
+def test_never_true_predicate_does_not_run_the_child(name):
+    src = compiled(_never_true_plans()[name])
+    assert "as_table(" not in src and "read_column(" not in src
+    assert "np.empty(0" in src
+    # it even works when the input table is missing entirely
+    compile_and_run(src, {})

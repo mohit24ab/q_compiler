@@ -5,7 +5,8 @@ Implemented (Phase C3): Scan, Filter, Project.
 """
 from __future__ import annotations
 
-from codegen.exprgen import CVar, CodegenError, ExprGen, Rel, full_src
+from codegen.emitter import Emitter
+from codegen.exprgen import _NP_FULL_DTYPE, CVar, CodegenError, ExprGen, Rel, full_src
 from runtime._compat import format_plan
 from runtime.expr_eval import node_kind
 
@@ -14,6 +15,12 @@ COMPILED_KINDS = {"Scan", "Filter", "Project"}
 
 def compilable(plan) -> bool:
     return node_kind(plan) in COMPILED_KINDS and all(compilable(c) for c in plan.children)
+
+
+def never_true(predicate) -> bool:
+    """A literal FALSE or NULL predicate: no row can ever pass it."""
+    return (predicate is not None and node_kind(predicate) == "Literal"
+            and (predicate.value is None or predicate.value is False))
 
 
 def mask_src(gen, code, n: str) -> str:
@@ -35,6 +42,20 @@ class PlanCompiler:
         if method is None or kind not in COMPILED_KINDS:
             raise CodegenError(f"{kind} is not compiled yet")
         return method(node)
+
+    def _empty(self, columns, why: str) -> Rel:
+        """Zero-row columns with the given layout; nothing below this point runs."""
+        self.em.comment(why)
+        out = []
+        for col in columns:
+            v = self.em.fresh(col.name)
+            self.em.line(f"{v} = np.empty(0, dtype={_NP_FULL_DTYPE[col.dtype.name]})")
+            out.append(CVar(col.name, col.dtype, col.table, v, "True"))
+        return Rel(out, "0")
+
+    def _layout_of(self, node) -> list[CVar]:
+        """The output columns `node` would produce, without emitting any of its code."""
+        return PlanCompiler(Emitter(), self.catalog).compile(node).columns
 
     def _section(self, node):
         self.em.blank()
@@ -58,7 +79,6 @@ class PlanCompiler:
         schema = self._table_schema(node)
         self._section(node)
         src = self.em.fresh(node.table)
-        self.em.line(f"{src} = as_table(tables[{node.table!r}])")
         full = Rel([CVar(name, dtype, node.table) for name, dtype in schema], n=f"{src}.num_rows")
 
         def load(col: CVar, rows: str | None = None):
@@ -74,6 +94,11 @@ class PlanCompiler:
         missing = [w for w in wanted if w not in by_name]
         if missing:
             raise CodegenError(f"Scan[{node.table}] asks for unknown columns {missing}")
+
+        if never_true(node.pushed_predicate):
+            return self._empty([by_name[w] for w in wanted],
+                               "pushed predicate is constant FALSE/NULL: the table is never read")
+        self.em.line(f"{src} = as_table(tables[{node.table!r}])")
 
         if node.pushed_predicate is None:
             out = []
@@ -115,6 +140,10 @@ class PlanCompiler:
 
     # ------------------------------------------------------------------ Filter
     def _filter(self, node) -> Rel:
+        if never_true(node.predicate):
+            columns = self._layout_of(node.child)
+            self._section(node)
+            return self._empty(columns, "predicate is constant FALSE/NULL: the child never runs")
         rel = self.compile(node.child)
         self._section(node)
         gen = ExprGen(self.em, rel)
