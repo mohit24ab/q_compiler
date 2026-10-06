@@ -122,3 +122,11 @@ def test_assert_equivalent_respects_order_only_when_the_query_sorts():
     by_desc = Aggregate(desc, [col("id")], [])
     assert evaluate(by_asc, TABLES).rows != evaluate(by_desc, TABLES).rows
     assert_equivalent(by_asc, by_desc, TABLES)
+
+
+def test_pushed_predicate_may_read_columns_not_in_scan_columns():
+    # Mirrors Person C's C1 test test_scan_pushed_predicate_may_use_unselected_column.
+    pred = op("AND", op("=", col("dept_id"), lit(10)), op(">", col("salary", "emp"), lit(110.0)))
+    result = evaluate(Scan("emp", ["id"], pred), TABLES)
+    assert result.columns == [("emp", "id")]
+    assert result.rows == [(1,)]

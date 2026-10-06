@@ -99,8 +99,8 @@ class _Pusher:
         return _filter(node, keep)
 
     def _scan_columns(self, node: Scan) -> set[str] | None:
-        if node.columns is not None:
-            return set(node.columns)
+        # The table's columns, not Scan.columns: codegen evaluates
+        # pushed_predicate on the full table before narrowing.
         schema = table_schema(node, self.catalog)
         return None if schema is None else {name for name, _ in schema}
 

@@ -13,8 +13,11 @@ works out what it needs from its own children:
     Aggregate  columns in the group keys + columns read by the aggregates
                the parent uses. Aggregates nobody uses are dropped.
                Group keys are never dropped, because they define the groups.
-    Scan       ``columns`` narrowed to those some reference can resolve to,
-               plus every column ``pushed_predicate`` reads
+    Scan       ``columns`` narrowed to those some reference can resolve to.
+               A column only ``pushed_predicate`` reads is dropped too:
+               codegen filters the full table before narrowing to
+               ``columns`` (confirmed by Person C; pinned by their C1 test
+               test_scan_pushed_predicate_may_use_unselected_column).
 
 The root's requirement is ALL, so the query's output never changes.
 
@@ -143,7 +146,6 @@ class _Pruner:
         else:
             return node  # the table's columns can't be listed, so leave it be
         needed = {n for q, n in req if self._may_name_table(q, node.table)}
-        needed |= {n for _, n in column_refs(node.pushed_predicate)}
         keep = [c for c in base if c in needed] or [_narrowest(base, schema)]
         if keep == base:
             return node
