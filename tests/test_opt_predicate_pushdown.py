@@ -11,6 +11,7 @@ import pytest
 
 import opt_ir  # noqa: F401
 import opt_query_suite as S
+from ir.expr import UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan
 from opt_query_suite import CATALOG, col, join, keep, lit, op, project, scan
 from optimizer.expressions import TRUE, split_conjuncts
@@ -250,3 +251,25 @@ def test_pushdown_is_idempotent(query):
 def test_untouched_plan_is_returned_as_the_same_object():
     plan = S.two_of_twenty()
     assert push(plan) is plan
+
+
+@pytest.mark.parametrize("spelling, stays_left", [("IS_NULL", True), ("IS_NOT_NULL", False)])
+def test_left_join_handles_person_a_underscore_spellings(spelling, stays_left):
+    # IS_NULL is the anti-join pattern and must stay above the LEFT join;
+    # IS_NOT_NULL rejects NULL-extended rows, so the join may become INNER.
+    j = join(scan("customer"), scan("orders"), op("=", col("c_id"), col("o_custkey")), kind="left")
+    plan = Filter(child=j, predicate=UnaryOp(spelling, col("o_id")))
+    (out_join,) = find(push(plan), Join)
+    assert (out_join.kind == "left") is stays_left
+
+
+def test_constants_are_never_moved():
+    # Constant folding lifts FALSE as high as it can; pushdown must not drag it back down.
+    false = op("=", lit(1), lit(0))
+    j = join(scan("orders"), scan("customer"), op("AND", op("=", col("o_custkey"), col("c_id")), false))
+    plan = Filter(child=project(j, *keep("o_id")), predicate=op("AND", false, op(">", col("o_id"), lit(3))))
+    out = push(plan)
+    assert isinstance(out, Filter) and out.predicate == false  # the WHERE constant stays on top
+    (jn,) = find(out, Join)
+    assert split_conjuncts(jn.condition)[-1] == false  # the ON constant stays in the condition
+    assert pushed(out)["orders"] == [op(">", col("o_id"), lit(3))]  # the real conjunct still moves

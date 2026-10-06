@@ -36,6 +36,11 @@ Rules, per node the conjunct is pushed into:
              rows.
   Unknown    Never crossed. The node's children are still optimized.
 
+A conjunct that reads no columns (a constant) is never moved. Constant
+folding owns those: it removes TRUE, and lifts FALSE as high as it can to
+short-circuit the largest possible subtree. Pushing constants down would
+undo that lift on every iteration.
+
 A conjunct is routed to a join side by strict name resolution against
 each side's output columns. If a conjunct cannot be routed (a column
 appears on both sides, or on neither, or a side's columns are unknown), it
@@ -69,6 +74,9 @@ class _Pusher:
 
     def push(self, node: Any, preds: list[Any]) -> Any:
         """Return a plan equivalent to ``Filter(node, AND(preds))``, with the predicates pushed as deep as allowed."""
+        constants, preds = _partition(preds, lambda p: not column_refs(p))
+        if constants:
+            return _filter(self.push(node, preds), constants)
         if isinstance(node, Filter):
             return self.push(node.child, split_conjuncts(node.predicate) + preds)
         if isinstance(node, Scan):
@@ -153,11 +161,13 @@ class _Pusher:
                     cond.append(p)
                 elif s == {RIGHT}:
                     to_right.append(p)
-                else:  # left-only, or reads no columns at all
+                elif s == {LEFT}:
                     to_left.append(p)
+                else:  # a constant ON conjunct stays in the condition
+                    cond.append(p)
         elif node.kind == "left":
-            to_left, above = _partition(preds, lambda p: sides(p) in ({LEFT}, set()))
-            to_right, cond = _partition(on, lambda p: sides(p) in ({RIGHT}, set()))
+            to_left, above = _partition(preds, lambda p: sides(p) == {LEFT})
+            to_right, cond = _partition(on, lambda p: sides(p) == {RIGHT})
         else:  # a join kind this pass doesn't know: leave its predicates alone
             to_left, to_right, cond, above = [], [], on, preds
 

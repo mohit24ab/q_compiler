@@ -17,11 +17,22 @@ from optimizer.columns import Ref
 TRUE = Literal(value=True, dtype=DType.BOOL)
 
 
+def op_name(op: str) -> str:
+    """Return the canonical spelling of an operator: ``"is_not_null"`` becomes ``"IS NOT NULL"``.
+
+    Person A's canonical spellings are uppercase with single spaces
+    ("IS NULL", "IS NOT NULL"). Underscore variants ("IS_NULL",
+    "IS_NOT_NULL") must also be accepted. Every operator comparison in the
+    optimizer goes through this function.
+    """
+    return op.upper().replace("_", " ")
+
+
 def split_conjuncts(expr: Any) -> list[Any]:
     """Flatten nested ANDs: ``a AND (b AND c)`` becomes ``[a, b, c]``. ``None`` gives ``[]``."""
     if expr is None:
         return []
-    if isinstance(expr, BinaryOp) and expr.op.upper() == "AND":
+    if isinstance(expr, BinaryOp) and op_name(expr.op) == "AND":
         return split_conjuncts(expr.left) + split_conjuncts(expr.right)
     return [expr]
 
@@ -101,14 +112,14 @@ def can_be_true(expr: Any, is_null: Callable[[ColumnRef], bool]) -> bool:
 
 def _outcomes(expr: Any, is_null) -> frozenset[str]:
     if isinstance(expr, BinaryOp):
-        op = expr.op.upper()
+        op = op_name(expr.op)
         if op in ("AND", "OR"):
             table = _AND if op == "AND" else _OR
             left, right = _outcomes(expr.left, is_null), _outcomes(expr.right, is_null)
             return frozenset(table[a, b] for a in left for b in right)
         return frozenset({N}) if _is_null(expr, is_null) else _ANY
     if isinstance(expr, UnaryOp):
-        op = expr.op.upper()
+        op = op_name(expr.op)
         if op == "NOT":
             return frozenset(_NOT[x] for x in _outcomes(expr.operand, is_null))
         if op == "IS NULL":
@@ -135,14 +146,14 @@ def _is_null(expr: Any, is_null) -> bool:
     if isinstance(expr, Literal):
         return expr.value is None
     if isinstance(expr, BinaryOp):
-        op = expr.op.upper()
+        op = op_name(expr.op)
         if op in ("AND", "OR"):
             return _outcomes(expr, is_null) == {N}
         if op in _NULL_PROPAGATING_BINARY:
             return _is_null(expr.left, is_null) or _is_null(expr.right, is_null)
         return False
     if isinstance(expr, UnaryOp):
-        op = expr.op.upper()
+        op = op_name(expr.op)
         if op == "NOT":
             return _outcomes(expr, is_null) == {N}
         if op in _NULL_PROPAGATING_UNARY:

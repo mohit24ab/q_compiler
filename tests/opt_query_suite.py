@@ -454,3 +454,159 @@ def filter_through_project_over_join():
     inner = project(j, (col("o_id", "orders"), "oid"), (col("c_segment", "customer"), "seg"))
     pred = op("AND", op("=", col("seg"), lit("BUILDING")), op(">", col("oid"), lit(10)))
     return Filter(child=inner, predicate=pred)
+
+
+# --------------------------------------------------------------------------
+# Constant folding and simplification (B4)
+# --------------------------------------------------------------------------
+
+
+def date(value: str) -> Literal:
+    return Literal(value=value, dtype=DType.DATE)
+
+
+NULL = Literal(value=None, dtype=DType.FLOAT)
+WHERE_FALSE = op("=", lit(1), lit(0))
+
+
+@query
+def constant_arithmetic_in_filter():
+    """SELECT sale_id FROM sales WHERE qty > 1 + 2"""
+    return project(Filter(child=scan("sales"), predicate=op(">", col("qty"), op("+", lit(1), lit(2)))),
+                   *keep("sale_id"))
+
+
+@query
+def constant_date_comparison():
+    """SELECT sale_id FROM sales WHERE DATE '2024-01-01' < DATE '2024-06-01' AND region = 'EU'"""
+    pred = op("AND", op("<", date("2024-01-01"), date("2024-06-01")), op("=", col("region"), lit("EU")))
+    return project(Filter(child=scan("sales"), predicate=pred), *keep("sale_id"))
+
+
+@query
+def or_true_removes_the_filter():
+    """SELECT sale_id FROM sales WHERE region = 'EU' OR 1 = 1"""
+    pred = op("OR", op("=", col("region"), lit("EU")), op("=", lit(1), lit(1)))
+    return project(Filter(child=scan("sales"), predicate=pred), *keep("sale_id"))
+
+
+@query
+def double_negation():
+    """SELECT sale_id FROM sales WHERE NOT NOT (qty > 4)"""
+    pred = UnaryOp(op="NOT", operand=UnaryOp(op="NOT", operand=op(">", col("qty"), lit(4))))
+    return project(Filter(child=scan("sales"), predicate=pred), *keep("sale_id"))
+
+
+@query
+def contradiction_on_equalities():
+    """SELECT sale_id FROM sales WHERE qty = 1 AND qty = 2"""
+    pred = op("AND", op("=", col("qty"), lit(1)), op("=", col("qty"), lit(2)))
+    return project(Filter(child=scan("sales"), predicate=pred), *keep("sale_id"))
+
+
+@query
+def contradiction_on_range():
+    """SELECT sale_id FROM sales WHERE qty > 5 AND 3 > qty"""
+    pred = op("AND", op(">", col("qty"), lit(5)), op(">", lit(3), col("qty")))
+    return project(Filter(child=scan("sales"), predicate=pred), *keep("sale_id"))
+
+
+@query
+def satisfiable_point_range():
+    """SELECT sale_id FROM sales WHERE qty >= 2 AND qty <= 2   -- not a contradiction: qty = 2"""
+    pred = op("AND", op(">=", col("qty"), lit(2)), op("<=", col("qty"), lit(2)))
+    return project(Filter(child=scan("sales"), predicate=pred), *keep("sale_id"))
+
+
+@query
+def null_comparison_rejects_every_row():
+    """SELECT sale_id FROM sales WHERE region = 'EU' AND amount = NULL"""
+    pred = op("AND", op("=", col("region"), lit("EU")), op("=", col("amount"), NULL))
+    return project(Filter(child=scan("sales"), predicate=pred), *keep("sale_id"))
+
+
+@query
+def false_filter_over_join_and_sort():
+    """SELECT o_id, c_name FROM orders JOIN customer ON o_custkey = c_id WHERE 1 = 0 ORDER BY o_id"""
+    j = join(scan("orders"), scan("customer"), op("=", col("o_custkey"), col("c_id")))
+    return Sort(child=project(Filter(child=j, predicate=WHERE_FALSE), *keep("o_id", "c_name")),
+                keys=[(col("o_id"), False)])
+
+
+@query
+def empty_side_of_inner_join():
+    """SELECT o_id FROM orders JOIN (SELECT * FROM customer WHERE 1 = 0) c ON o_custkey = c_id"""
+    j = join(scan("orders"), Filter(child=scan("customer"), predicate=WHERE_FALSE),
+             op("=", col("o_custkey"), col("c_id")))
+    return project(j, *keep("o_id"))
+
+
+@query
+def empty_right_side_of_left_join_must_not_lift():
+    """SELECT c_name, o_total FROM customer LEFT JOIN (SELECT * FROM orders WHERE 1 = 0) o ON c_id = o_custkey"""
+    j = join(scan("customer"), Filter(child=scan("orders"), predicate=WHERE_FALSE),
+             op("=", col("c_id"), col("o_custkey")), kind="left")
+    return project(j, *keep("c_name", "o_total"))
+
+
+@query
+def global_aggregate_over_empty_must_not_lift():
+    """SELECT COUNT(*) n, SUM(amount) s FROM sales WHERE qty = 1 AND qty = 2   -- one row: (0, NULL)"""
+    pred = op("AND", op("=", col("qty"), lit(1)), op("=", col("qty"), lit(2)))
+    return Aggregate(child=Filter(child=scan("sales"), predicate=pred), group_keys=[],
+                     aggs=[(agg("count"), "n"), (agg("sum", col("amount")), "s")])
+
+
+@query
+def grouped_aggregate_over_empty():
+    """SELECT region, COUNT(*) n FROM sales WHERE 1 = 0 GROUP BY region"""
+    return Aggregate(child=Filter(child=scan("sales"), predicate=WHERE_FALSE),
+                     group_keys=[col("region")], aggs=[(agg("count"), "n")])
+
+
+@query
+def limit_zero():
+    """SELECT sale_id FROM sales ORDER BY sale_id LIMIT 0"""
+    return Limit(child=Sort(child=project(scan("sales"), *keep("sale_id")), keys=[(col("sale_id"), False)]), n=0)
+
+
+@query
+def folded_select_expressions():
+    """SELECT sale_id, 2 * 3 AS six, 1.5 * 2 AS three, 7 / 2 AS seven_halves, -(4) AS neg FROM sales"""
+    return project(scan("sales"), (col("sale_id"), "sale_id"), (op("*", lit(2), lit(3)), "six"),
+                   (op("*", lit(1.5), lit(2)), "three"), (op("/", lit(7), lit(2)), "seven_halves"),
+                   (UnaryOp(op="-", operand=lit(4)), "neg"))
+
+
+@query
+def contradiction_in_select_must_stay():
+    """SELECT sale_id, (amount = 10.0 AND amount = 20.0) AS flag FROM sales   -- NULL, not FALSE, for NULL amounts"""
+    flag = op("AND", op("=", col("amount"), lit(10.0)), op("=", col("amount"), lit(20.0)))
+    return project(scan("sales"), (col("sale_id"), "sale_id"), (flag, "flag"))
+
+
+@query
+def noop_project_over_scan():
+    """SELECT id, name, dept_id, salary FROM emp   -- every column, in order"""
+    return project(scan("emp"), *keep("id", "name", "dept_id", "salary"))
+
+
+@query
+def constant_conjuncts_in_join_and_scan():
+    """SELECT o_id FROM (SELECT * FROM orders WHERE 1 = 1) JOIN customer ON o_custkey = c_id AND 2 > 1"""
+    left = scan("orders", pushed=op("=", lit(1), lit(1)))
+    j = join(left, scan("customer"), op("AND", op("=", col("o_custkey"), col("c_id")), op(">", lit(2), lit(1))))
+    return project(j, *keep("o_id"))
+
+
+@query
+def null_and_in_select_must_stay():
+    """SELECT sale_id, (amount > 100 AND NULL) AS flag FROM sales   -- NULL where amount > 100, else FALSE"""
+    flag = op("AND", op(">", col("amount"), lit(100.0)), Literal(value=None, dtype=DType.BOOL))
+    return project(scan("sales"), (col("sale_id"), "sale_id"), (flag, "flag"))
+
+
+@query
+def reordering_project_must_stay():
+    """SELECT name, id, dept_id, salary FROM emp   -- every column, but not in table order"""
+    return project(scan("emp"), *keep("name", "id", "dept_id", "salary"))
