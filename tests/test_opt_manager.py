@@ -8,6 +8,7 @@ import warnings
 
 import pytest
 
+import opt_ir  # noqa: F401  (default_passes() imports the IR)
 import optimizer
 from optimizer.manager import (
     IterationCapWarning,
