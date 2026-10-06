@@ -21,8 +21,13 @@ def format_expr(expr: Expr) -> str:
         return f"{format_expr(expr.left)} {expr.op} {format_expr(expr.right)}"
 
     if isinstance(expr, UnaryOp):
-        if expr.op.upper() == "NOT":
+        op_norm = " ".join(expr.op.strip().upper().replace("_", " ").split())
+        if op_norm == "NOT":
             return f"NOT {format_expr(expr.operand)}"
+        if op_norm == "IS NULL":
+            return f"{format_expr(expr.operand)} IS NULL"
+        if op_norm == "IS NOT NULL":
+            return f"{format_expr(expr.operand)} IS NOT NULL"
         return f"{expr.op}{format_expr(expr.operand)}"
 
     if isinstance(expr, AggCall):

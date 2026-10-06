@@ -3,9 +3,9 @@ from dataclasses import FrozenInstanceError
 
 from ir.dtype import DType
 from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
-from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
+from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort, _infer_expr_dtype
 from ir.visitor import transform_post_order
-from ir.printer import format_plan
+from ir.printer import format_expr, format_plan
 
 
 class MockScan(Scan):
@@ -159,3 +159,25 @@ def test_three_hand_built_plans_printer_output():
         "    Scan[customer]"
     )
     assert format_plan(proj3) == expected_3
+
+
+def test_unary_op_is_null_format_and_type_inference():
+    col_x = ColumnRef(table=None, name="x")
+
+    assert format_expr(UnaryOp(op="IS NULL", operand=ColumnRef(None, "x"))) == "x IS NULL"
+    assert format_expr(UnaryOp(op="IS NOT NULL", operand=ColumnRef(None, "x"))) == "x IS NOT NULL"
+
+    # Additional case-insensitive and underscore variants
+    assert format_expr(UnaryOp(op="is null", operand=col_x)) == "x IS NULL"
+    assert format_expr(UnaryOp(op="is not null", operand=col_x)) == "x IS NOT NULL"
+    assert format_expr(UnaryOp(op="IS_NULL", operand=col_x)) == "x IS NULL"
+    assert format_expr(UnaryOp(op="IS_NOT_NULL", operand=col_x)) == "x IS NOT NULL"
+    assert format_expr(UnaryOp(op="is_null", operand=col_x)) == "x IS NULL"
+    assert format_expr(UnaryOp(op="is_not_null", operand=col_x)) == "x IS NOT NULL"
+
+    # Type inference tests
+    child_schema = [("x", DType.INT)]
+    assert _infer_expr_dtype(UnaryOp(op="IS NULL", operand=col_x), child_schema) == DType.BOOL
+    assert _infer_expr_dtype(UnaryOp(op="IS NOT NULL", operand=col_x), child_schema) == DType.BOOL
+    assert _infer_expr_dtype(UnaryOp(op="IS_NULL", operand=col_x), child_schema) == DType.BOOL
+    assert _infer_expr_dtype(UnaryOp(op="IS_NOT_NULL", operand=col_x), child_schema) == DType.BOOL
