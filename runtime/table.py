@@ -101,6 +101,20 @@ class Column:
         return Column(name, dtype, arr, None if mask.all() else mask, table)
 
 
+def find_columns(columns, name: str, table: str | None = None) -> list[int]:
+    """Name resolution shared by the interpreter and the code generator.
+
+    `columns` is any sequence of objects with `.name` and `.table`. Returns the indices
+    matching `name` (and `table`, if given). A qualified reference falls back to an
+    unqualified column of that name, because a Project drops qualifiers.
+    """
+    hits = [i for i, c in enumerate(columns)
+            if c.name == name and (table is None or c.table == table)]
+    if not hits and table is not None:
+        hits = [i for i, c in enumerate(columns) if c.name == name and c.table is None]
+    return hits
+
+
 class Table:
     def __init__(self, columns: list[Column]):
         lengths = {len(c) for c in columns}
@@ -127,13 +141,7 @@ class Table:
 
     def find(self, name: str, table: str | None = None) -> list[int]:
         """Indices of columns matching `name` (and `table`, if given)."""
-        hits = [i for i, c in enumerate(self.columns)
-                if c.name == name and (table is None or c.table == table)]
-        if not hits and table is not None:
-            # lenient fallback: qualifier was dropped by an intermediate Project
-            hits = [i for i, c in enumerate(self.columns)
-                    if c.name == name and c.table is None]
-        return hits
+        return find_columns(self.columns, name, table)
 
     def column(self, name: str, table: str | None = None) -> Column:
         hits = self.find(name, table)

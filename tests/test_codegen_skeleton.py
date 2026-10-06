@@ -7,7 +7,7 @@ from codegen import Emitter, GeneratedCodeError, compile_and_run, generate
 from runtime import compare_tables, interpret
 from runtime._compat import DType
 
-from codegen_fixtures import SAMPLE_PLANS, TABLES, col, lit, op, scan
+from codegen_fixtures import CATALOG, SAMPLE_PLANS, TABLES, col, lit, op, scan
 
 SAMPLE_IDS = sorted(SAMPLE_PLANS)
 
@@ -57,7 +57,7 @@ def test_docstring_with_backslashes_and_quotes_stays_valid():
 @pytest.mark.parametrize("name", SAMPLE_IDS)
 def test_generated_source_is_a_valid_self_contained_module(name):
     plan, _ = SAMPLE_PLANS[name]
-    src = generate(plan, catalog=None)
+    src = generate(plan, CATALOG)
     tree = ast.parse(src)
     funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
     assert [f.name for f in funcs] == ["run"]
@@ -78,7 +78,7 @@ def test_generated_module_runs_in_an_empty_namespace():
 def test_passthrough_output_matches_interpreter(name):
     plan, ordered = SAMPLE_PLANS[name]
     expected = interpret(plan, TABLES)
-    actual = compile_and_run(generate(plan), TABLES)
+    actual = compile_and_run(generate(plan, CATALOG), TABLES)
     ok, why = compare_tables(expected, actual, ordered=ordered)
     assert ok, why
 
@@ -95,7 +95,7 @@ def test_emitted_plan_round_trips_to_an_equal_plan():
 
 def test_date_and_dtype_literals_are_emitted_as_code():
     plan = scan("sales", pred=op(">=", col("day"), lit("2024-03-01", DType.DATE)))
-    src = generate(plan)
+    src = generate(plan, CATALOG)
     assert "DType.DATE" in src
     assert compile_and_run(src, TABLES).column("id").to_pylist() == [3, 4, 5, 6]
 
@@ -130,11 +130,21 @@ def test_runtime_error_points_at_the_generated_line():
 
 
 def test_error_raised_deep_inside_a_helper_still_reports_generated_line():
-    src = generate(scan("missing_table"))
+    src = generate(scan("missing_table"), mode="passthrough")
     with pytest.raises(GeneratedCodeError) as info:
         compile_and_run(src, TABLES)
     assert "missing_table" in str(info.value)
     assert "return interpret(" in src.splitlines()[info.value.lineno - 1]
+
+
+def test_missing_input_table_in_compiled_code_points_at_its_line():
+    class Cat:
+        def schema(self, table):
+            return [("x", DType.INT)]
+    src = generate(scan("missing_table"), Cat())
+    with pytest.raises(GeneratedCodeError) as info:
+        compile_and_run(src, TABLES)
+    assert "tables['missing_table']" in src.splitlines()[info.value.lineno - 1]
 
 
 def test_module_without_run_or_wrong_return_type_is_rejected():

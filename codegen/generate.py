@@ -9,10 +9,13 @@ Every generated module has the same outer shape:
         ...
         return <Table>
 
-Phase C2 (this file's current state) emits a *passthrough*: the body rebuilds the plan
-tree as literal constructor calls — one variable per operator, bottom-up — and hands it
-to the reference interpreter. Later phases replace the body with real numpy code; the
-module shape, header and runner stay the same.
+Two modes:
+  * compiled     — real numpy code, one commented section per operator (codegen/operators.py).
+                   Used whenever every node in the plan has a compiler (Phase C3: Scan,
+                   Filter, Project).
+  * passthrough  — the body rebuilds the plan as constructor calls and hands it to the
+                   reference interpreter. Used for plans the compiler can't handle yet,
+                   and selectable with mode="passthrough" for comparisons.
 """
 from __future__ import annotations
 
@@ -21,19 +24,53 @@ import datetime
 import math
 
 from codegen.emitter import Emitter
+from codegen.exprgen import CodegenError
+from codegen.operators import PlanCompiler, compilable
 from runtime._compat import format_plan
 from runtime.expr_eval import node_kind
 
 _PLAN_KINDS = {"Scan", "Filter", "Project", "Join", "Aggregate", "Sort", "Limit"}
 
 
-def generate(plan, catalog=None) -> str:
-    """Python source text for a module whose `run(tables)` executes `plan`."""
+def generate(plan, catalog=None, mode: str = "auto") -> str:
+    """Python source text for a module whose `run(tables)` executes `plan`.
+
+    mode: "auto" (compile when possible), "compiled" (error if not possible),
+          or "passthrough" (always interpret).
+    """
+    if mode not in ("auto", "compiled", "passthrough"):
+        raise ValueError(f"unknown mode {mode!r}")
+    if mode == "passthrough" or (mode == "auto" and not compilable(plan)):
+        return _generate_passthrough(plan)
+    if not compilable(plan):
+        raise CodegenError("plan contains operators that are not compiled yet")
+    return _generate_compiled(plan, catalog)
+
+
+_HELPERS = ("as_table", "read_column", "build_table", "like")
+
+
+def _generate_compiled(plan, catalog) -> str:
+    em = Emitter()
+    compiler = PlanCompiler(em, catalog)
+    with em.block("def run(tables):"):
+        rel = compiler.compile(plan)
+        compiler.finish(rel)
+
+    body = em.body_text()
+    em.import_("import numpy as np")
+    em.import_("from runtime._compat import DType")
+    used = [h for h in _HELPERS if f"{h}(" in body]
+    em.import_(f"from runtime.vec import {', '.join(used)}")
+    return em.source(docstring=_header(plan, mode="compiled (numpy)"))
+
+
+def _generate_passthrough(plan) -> str:
     em = Emitter()
     builder = _PlanLiteral(em)
 
     with em.block("def run(tables):"):
-        em.comment("Passthrough (Phase C2): rebuild the plan, then interpret it.")
+        em.comment("Passthrough: rebuild the plan, then interpret it.")
         root = builder.emit(plan)
         em.blank()
         em.line(f"return interpret({root}, tables)")
@@ -42,7 +79,7 @@ def generate(plan, catalog=None) -> str:
     if builder.needs_datetime:
         em.import_("import datetime")
     em.import_(f"from runtime._compat import {', '.join(sorted(builder.used_classes))}")
-    return em.source(docstring=_header(plan, mode="passthrough"))
+    return em.source(docstring=_header(plan, mode="passthrough (interpreter)"))
 
 
 def _header(plan, mode: str) -> str:

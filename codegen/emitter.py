@@ -43,7 +43,7 @@ class Emitter:
             self.line(f"# {ln}".rstrip())
 
     def blank(self) -> None:
-        if self._lines and self._lines[-1] != "":
+        if self._lines and self._lines[-1] != "" and not self._lines[-1].endswith(":"):
             self._lines.append("")
 
     @contextmanager
@@ -60,6 +60,18 @@ class Emitter:
             if len(self._lines) == start:  # an empty block would be a syntax error
                 self.line("pass")
             self._depth -= 1
+
+    @contextmanager
+    def indent(self):
+        """Indent without a block header, e.g. the items of a multi-line list."""
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+
+    def body_text(self) -> str:
+        return "\n".join(self._lines)
 
     # ---------------------------------------------------------------- names
     def fresh(self, hint: str) -> str:

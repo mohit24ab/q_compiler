@@ -52,6 +52,19 @@ CUSTOMER = Table.from_pydict(
 TABLES = {"sales": SALES, "orders": ORDERS, "customer": CUSTOMER}
 
 
+class FixtureCatalog:
+    """The part of Contract §6 codegen needs: schema(table)."""
+
+    def schema(self, table):
+        return list(TABLES[table].schema)
+
+    def row_count(self, table):
+        return TABLES[table].num_rows
+
+
+CATALOG = FixtureCatalog()
+
+
 def orders_join_customer(kind="inner"):
     cond = op("=", col("cust_id", "orders"), col("id", "customer"))
     return Join(left=scan("orders"), right=scan("customer"), condition=cond, kind=kind)
@@ -137,4 +150,80 @@ SAMPLE_PLANS = {
             "OR", UnaryOp(op="IS NULL", operand=col("region")),
             UnaryOp(op="IS NOT NULL", operand=col("amount")))),
         False),
+}
+
+
+def _s(value):
+    return lit(value, DType.STRING)
+
+
+def _f(value):
+    return lit(value, DType.FLOAT)
+
+
+# Phase C3: single-table queries (Scan / Filter / Project only) — must compile fully.
+# name -> (plan, the SQL it stands for)
+SINGLE_TABLE_PLANS = {
+    "select_star": (scan("sales"), "SELECT * FROM sales"),
+    "two_columns": (
+        Project(child=scan("sales", columns=["id", "qty"]),
+                exprs=[(col("qty"), "qty"), (col("id"), "id")]),
+        "SELECT qty, id FROM sales"),
+    "where_null_dropped": (
+        Filter(child=scan("sales"), predicate=op(">", col("amount"), _f(15.0))),
+        "SELECT * FROM sales WHERE amount > 15"),
+    "pushed_on_unselected_column": (
+        scan("sales", columns=["id"], pred=op("=", col("region"), _s("EU"))),
+        "SELECT id FROM sales WHERE region = 'EU'   -- after pushdown + pruning"),
+    "arith_precedence": (
+        Project(child=scan("sales"), exprs=[
+            (op("-", op("-", col("qty"), lit(1)), lit(2)), "left_assoc"),
+            (op("-", col("qty"), op("-", lit(1), lit(2))), "right_assoc"),
+            (op("*", op("+", col("qty"), lit(1)), lit(2)), "sum_times"),
+            (op("+", col("qty"), op("*", lit(1), lit(2))), "plus_product")]),
+        "SELECT (qty-1)-2, qty-(1-2), (qty+1)*2, qty+1*2 FROM sales"),
+    "division_and_modulo": (
+        Project(child=scan("sales"), exprs=[
+            (op("/", col("amount"), col("qty")), "per_unit"),
+            (op("/", col("qty"), lit(0)), "div_zero"),
+            (op("%", op("-", lit(0), col("qty")), lit(4)), "neg_mod"),
+            (op("/", col("qty"), op("-", col("qty"), lit(3))), "div_by_col_zero")]),
+        "SELECT amount/qty, qty/0, (0-qty)%4, qty/(qty-3) FROM sales"),
+    "kleene_and_or_not": (
+        Filter(child=scan("sales"), predicate=op(
+            "OR", op("AND", op(">", col("amount"), _f(15.0)), op("<>", col("region"), _s("EU"))),
+            UnaryOp(op="NOT", operand=op("<", col("qty"), lit(6))))),
+        "SELECT * FROM sales WHERE (amount > 15 AND region <> 'EU') OR NOT qty < 6"),
+    "is_null_projection": (
+        Project(child=scan("sales"), exprs=[
+            (UnaryOp(op="IS NULL", operand=col("amount")), "amount_missing"),
+            (UnaryOp(op="IS NOT NULL", operand=op("+", col("amount"), col("qty"))), "sum_present")]),
+        "SELECT amount IS NULL, (amount + qty) IS NOT NULL FROM sales"),
+    "date_and_string_literals": (
+        Filter(child=scan("sales"), predicate=op(
+            "AND", op(">=", col("day"), _s("2024-03-01")), op("<", col("day"), lit("2024-06-01", DType.DATE)))),
+        "SELECT * FROM sales WHERE day >= '2024-03-01' AND day < DATE '2024-06-01'"),
+    "like_and_concat": (
+        Project(child=Filter(child=scan("sales"), predicate=op("LIKE", col("region"), _s("%U%"))),
+                exprs=[(op("||", col("region"), _s("-x")), "tag"), (col("id"), "id")]),
+        "SELECT region || '-x', id FROM sales WHERE region LIKE '%U%'"),
+    "constants_and_null_literal": (
+        Project(child=scan("sales", columns=["id"]), exprs=[
+            (col("id"), "id"), (lit(7), "seven"), (_s("k"), "k"),
+            (lit(None, DType.INT), "nothing"), (op("+", col("id"), lit(None, DType.INT)), "plus_null")]),
+        "SELECT id, 7, 'k', NULL, id + NULL FROM sales"),
+    "constant_false_filter": (
+        Filter(child=scan("sales"), predicate=lit(False, DType.BOOL)),
+        "SELECT * FROM sales WHERE FALSE"),
+    "stacked_filter_project": (
+        Project(child=Filter(child=Project(child=Filter(
+            child=scan("sales"), predicate=op(">", col("qty"), lit(1))),
+            exprs=[(col("id"), "id"), (op("*", col("amount"), lit(2)), "dbl")]),
+            predicate=op("<", col("dbl"), _f(110.0))),
+            exprs=[(op("+", col("dbl"), col("id")), "z")]),
+        "SELECT dbl + id FROM (SELECT id, amount*2 AS dbl FROM sales WHERE qty > 1) WHERE dbl < 110"),
+    "qualified_columns": (
+        Project(child=Filter(child=scan("orders"), predicate=op(">", col("total", "orders"), lit(6))),
+                exprs=[(col("id", "orders"), "id"), (col("cust_id", "orders"), "cust")]),
+        "SELECT orders.id, orders.cust_id AS cust FROM orders WHERE orders.total > 6"),
 }
