@@ -94,14 +94,47 @@ def _make_tables() -> dict[str, tuple[list[str], list[tuple]]]:
 TABLES = _make_tables()
 
 
+@dataclass(frozen=True)
+class ColumnStats:
+    """The fields of Person A's ``catalog.stats.ColumnStats``."""
+
+    ndv: int
+    min: Any
+    max: Any
+    null_count: int
+
+
 class SuiteCatalog:
-    """Just enough of Contract §6 for the suite: schema and row counts."""
+    """Contract §6 over in-memory rows: schema, row counts and column statistics.
+
+    ``stats`` computes exact statistics the way Person A's
+    ``compute_column_stats`` does: distinct non-NULL values, min and max of the
+    non-NULL values (None for an all-NULL column), and the NULL count.
+    """
+
+    def __init__(self, tables: dict[str, tuple[list[str], list[tuple]]] | None = None,
+                 schemas: dict[str, list[tuple[str, DType]]] | None = None):
+        self.tables = TABLES if tables is None else tables
+        self.schemas = SCHEMAS if schemas is None else schemas
 
     def schema(self, table: str) -> list[tuple[str, DType]]:
-        return list(SCHEMAS[table])
+        return list(self.schemas[table])
 
     def row_count(self, table: str) -> int:
-        return len(TABLES[table][1])
+        return len(self.tables[table][1])
+
+    def stats(self, table: str, column: str) -> ColumnStats:
+        names, rows = self.tables[table]
+        if column not in names:
+            raise KeyError(f"Column '{column}' not found in table '{table}'.")
+        i = names.index(column)
+        values = [r[i] for r in rows if r[i] is not None]
+        return ColumnStats(
+            ndv=len(set(values)),
+            min=min(values) if values else None,
+            max=max(values) if values else None,
+            null_count=len(rows) - len(values),
+        )
 
 
 CATALOG = SuiteCatalog()
