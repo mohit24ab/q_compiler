@@ -72,6 +72,8 @@ def format_expr(expr) -> str:
     if isinstance(expr, BinaryOp):
         return f"{_operand(expr.left)} {expr.op} {_operand(expr.right)}"
     if isinstance(expr, UnaryOp):
+        if expr.op.upper() in ("IS NULL", "IS NOT NULL"):
+            return f"{_operand(expr.operand)} {expr.op}"
         sep = " " if expr.op.isalpha() else ""
         return f"{expr.op}{sep}{_operand(expr.operand)}"
     if isinstance(expr, AggCall):

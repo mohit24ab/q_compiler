@@ -6,9 +6,10 @@ evaluator. Add each new pass to the default pipeline and this file covers it
 with no edits.
 
 The negative controls at the bottom show that this harness actually
-catches the classic pruning bugs, rather than passing everything.
+catches the classic pruning and pushdown bugs, rather than passing everything.
 """
 
+import dataclasses
 import warnings
 
 import pytest
@@ -16,10 +17,11 @@ import pytest
 import opt_ir  # noqa: F401
 import opt_query_suite as S
 import optimizer
-from ir.nodes import Join, Project, Scan
-from opt_query_suite import CATALOG, TABLES, col
+from ir.nodes import Filter, Join, Project, Scan
+from opt_query_suite import CATALOG, TABLES, col, is_null, keep, op, project
 from opt_reference_eval import assert_equivalent
 from optimizer.column_pruning import ColumnPruning
+from optimizer.expressions import split_conjuncts
 
 
 @pytest.mark.parametrize("query", S.QUERIES, ids=lambda q: q.name)
@@ -78,3 +80,55 @@ def test_harness_catches_a_project_that_breaks_qualified_references():
     assert isinstance(broken.child.left, Project) and isinstance(broken.child, Join)
     with pytest.raises(LookupError, match="customer"):
         assert_equivalent(plan, broken, TABLES)
+
+
+# The "must not push" suite queries only protect anything if pushing them
+# really changes the answer on this data. Each test below builds the
+# illegal rewrite by hand and checks that the harness rejects it.
+
+
+def test_harness_catches_is_null_pushed_into_null_producing_side():
+    plan = S.left_join_is_null_must_not_push()
+    j = plan.child.child
+    illegal = project(dataclasses.replace(j, right=Filter(child=j.right, predicate=is_null(col("o_id")))),
+                      *keep("c_name"))
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
+
+
+def test_harness_catches_left_join_on_conjunct_pushed_into_preserved_side():
+    plan = S.left_join_on_conjuncts()
+    j = plan.child
+    c_id_eq, o_status, c_segment = split_conjuncts(j.condition)
+    illegal = project(dataclasses.replace(j, left=Filter(child=j.left, predicate=c_segment),
+                                          condition=op("AND", c_id_eq, o_status)), *keep("c_name", "o_total"))
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
+
+
+def test_harness_catches_filter_pushed_below_limit():
+    plan = S.filter_above_limit_must_not_push()
+    limit = plan.child
+    illegal = dataclasses.replace(limit, child=Filter(child=limit.child, predicate=plan.predicate))
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
+
+
+def test_harness_catches_constant_pushed_below_global_aggregate():
+    plan = S.constant_false_over_global_aggregate_must_not_push()
+    aggregate = plan.child
+    illegal = dataclasses.replace(aggregate, child=Filter(child=aggregate.child, predicate=plan.predicate))
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
+
+
+def test_harness_catches_left_join_wrongly_made_inner():
+    # The OR can be TRUE for a NULL-extended row (customer 11 has no orders),
+    # so it is not null-rejecting and the join must stay LEFT.
+    plan = S.left_join_or_with_preserved_side_must_not_push()
+    f = plan.child
+    j = f.child
+    illegal = project(dataclasses.replace(j, kind="inner", condition=op("AND", j.condition, f.predicate)),
+                      *keep("c_name", "o_total"))
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
