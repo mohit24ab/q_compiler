@@ -160,3 +160,36 @@ class Limit:
 
     def replace_children(self, new_children):
         return replace(self, child=new_children[0])
+
+
+# ---------------------------------------------------------------- printer
+
+def format_plan(node, depth: int = 0) -> str:
+    """Minimal stand-in for ir.printer.format_plan (same output shape)."""
+    from runtime.expr_eval import node_kind, render_expr
+    kind = node_kind(node)
+    if kind == "Scan":
+        parts = [node.table]
+        if node.columns is not None:
+            parts.append(f"columns=[{', '.join(node.columns)}]")
+        if node.pushed_predicate is not None:
+            parts.append(f"pushed={render_expr(node.pushed_predicate)}")
+        detail = ", ".join(parts)
+    elif kind == "Filter":
+        detail = render_expr(node.predicate)
+    elif kind == "Project":
+        detail = ", ".join(a if render_expr(e) == a else f"{render_expr(e)} AS {a}"
+                           for e, a in node.exprs)
+    elif kind == "Join":
+        detail = f"kind={node.kind}, cond={render_expr(node.condition)}"
+    elif kind == "Aggregate":
+        detail = (f"group={', '.join(render_expr(k) for k in node.group_keys)}, "
+                  f"aggs={', '.join(f'{render_expr(a)} AS {n}' for a, n in node.aggs)}")
+    elif kind == "Sort":
+        detail = "keys=" + ", ".join(
+            f"{render_expr(k)} {'DESC' if d else 'ASC'}" for k, d in node.keys)
+    else:
+        detail = f"n={node.n}"
+    lines = [f"{'  ' * depth}{kind}[{detail}]"]
+    lines += [format_plan(c, depth + 1) for c in node.children]
+    return "\n".join(lines)

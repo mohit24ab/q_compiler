@@ -6,53 +6,10 @@ import pytest
 
 from runtime import InterpreterError, Table, interpret
 from runtime._compat import (
-    AggCall, Aggregate, BinaryOp, ColumnRef, DType, Filter, Join, Limit, Literal,
-    Project, Scan, Sort, UnaryOp,
+    AggCall, Aggregate, DType, Filter, Limit, Project, Scan, Sort, UnaryOp,
 )
 
-
-# ------------------------------------------------------------------ fixtures
-
-def col(name, table=None):
-    return ColumnRef(table=table, name=name)
-
-
-def lit(value, dtype=DType.INT):
-    return Literal(value=value, dtype=dtype)
-
-
-def op(o, a, b):
-    return BinaryOp(op=o, left=a, right=b)
-
-
-def scan(table, columns=None, pred=None):
-    return Scan(table=table, columns=columns, pushed_predicate=pred)
-
-
-SALES = Table.from_pydict(
-    {
-        "id":     [1, 2, 3, 4, 5, 6],
-        "region": ["US", "EU", "US", "AP", "EU", None],
-        "amount": [10.0, 20.0, 30.0, None, 50.0, 60.0],
-        "qty":    [1, 2, 3, 4, 5, 6],
-        "day":    ["2024-01-01", "2024-02-01", "2024-03-01",
-                   "2024-04-01", "2024-05-01", "2024-06-01"],
-    },
-    [("id", DType.INT), ("region", DType.STRING), ("amount", DType.FLOAT),
-     ("qty", DType.INT), ("day", DType.DATE)],
-)
-
-ORDERS = Table.from_pydict(
-    {"id": [100, 101, 102, 103], "cust_id": [1, 2, 1, None], "total": [5, 7, 9, 11]},
-    [("id", DType.INT), ("cust_id", DType.INT), ("total", DType.INT)],
-)
-
-CUSTOMER = Table.from_pydict(
-    {"id": [1, 2, 3], "name": ["ann", "bob", "cyd"]},
-    [("id", DType.INT), ("name", DType.STRING)],
-)
-
-TABLES = {"sales": SALES, "orders": ORDERS, "customer": CUSTOMER}
+from codegen_fixtures import TABLES, col, lit, op, orders_join_customer, scan
 
 
 def run(plan):
@@ -153,11 +110,6 @@ def test_modulo_truncates_like_sql():
 
 
 # ------------------------------------------------------------------ Join
-
-def orders_join_customer(kind):
-    cond = op("=", col("cust_id", "orders"), col("id", "customer"))
-    return Join(left=scan("orders"), right=scan("customer"), condition=cond, kind=kind)
-
 
 def test_inner_join_matches_and_null_key_never_matches():
     out = run(orders_join_customer("inner"))
