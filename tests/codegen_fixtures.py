@@ -105,4 +105,36 @@ SAMPLE_PLANS = {
         True),
     "top_n": (Limit(child=Sort(child=scan("sales"), keys=[(col("qty"), True)]), n=3), True),
     "canonical_naive": (_canonical_naive_plan(), True),
+
+    # Shapes Person B's column pruning (B2) produces — confirmed with B, keep forever.
+    "pruned_group_by_without_aggs": (
+        Project(child=Aggregate(child=scan("sales", columns=["region"]),
+                                group_keys=[col("region")], aggs=[]),
+                exprs=[(col("region"), "region")]),
+        False),
+    "pruned_scan_columns_cover_pushed_predicate": (
+        scan("sales", columns=["id", "amount"], pred=op(">", col("amount"), lit(25.0, DType.FLOAT))),
+        False),
+    "pruned_scan_explicit_columns": (scan("sales", columns=["amount", "id"]), False),
+
+    # Join conditions pushdown (B3) can leave behind.
+    "join_true_inner": (
+        Join(left=scan("customer"), right=scan("orders", columns=["total"]),
+             condition=lit(True, DType.BOOL), kind="inner"), False),
+    "join_true_left_empty_right": (
+        Join(left=scan("customer"),
+             right=Filter(child=scan("orders"), predicate=lit(False, DType.BOOL)),
+             condition=lit(True, DType.BOOL), kind="left"), False),
+    "join_false_inner": (
+        Join(left=scan("customer"), right=scan("orders"),
+             condition=lit(False, DType.BOOL), kind="inner"), False),
+    "join_no_condition": (
+        Join(left=scan("customer"), right=scan("orders", columns=["id"]),
+             condition=None, kind="inner"), False),
+
+    "filter_is_null_and_is_not_null": (
+        Filter(child=scan("sales"), predicate=op(
+            "OR", UnaryOp(op="IS NULL", operand=col("region")),
+            UnaryOp(op="IS NOT NULL", operand=col("amount")))),
+        False),
 }

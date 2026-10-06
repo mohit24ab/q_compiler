@@ -142,3 +142,29 @@ def test_module_without_run_or_wrong_return_type_is_rejected():
         compile_and_run("x = 1\n", {})
     with pytest.raises(GeneratedCodeError, match="expected runtime.Table"):
         compile_and_run("def run(tables):\n    return 42\n", {})
+
+
+# ------------------------------------------------------------------ regressions
+
+def test_is_null_renders_postfix():
+    from runtime._compat import UnaryOp
+    from runtime.expr_eval import render_expr
+    assert render_expr(UnaryOp(op="IS NULL", operand=col("x"))) == "(x IS NULL)"
+    assert render_expr(UnaryOp(op="is not null", operand=col("x"))) == "(x IS NOT NULL)"
+    assert render_expr(UnaryOp(op="NOT", operand=col("x"))) == "(NOT x)"
+
+
+def test_expected_row_counts_for_pruning_and_join_shapes():
+    """Hand-computed sizes, so the parity tests above can't both be wrong together."""
+    expect = {
+        "pruned_group_by_without_aggs": 4,                 # US, EU, AP, NULL
+        "pruned_scan_columns_cover_pushed_predicate": 3,   # amounts 30, 50, 60
+        "pruned_scan_explicit_columns": 6,
+        "join_true_inner": 12,                             # 3 customers x 4 orders
+        "join_true_left_empty_right": 3,
+        "join_false_inner": 0,
+        "join_no_condition": 12,
+        "filter_is_null_and_is_not_null": 5,               # all but id 4 (region AP, amount NULL)
+    }
+    for name, rows in expect.items():
+        assert interpret(SAMPLE_PLANS[name][0], TABLES).num_rows == rows, name

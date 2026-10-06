@@ -62,7 +62,10 @@ def render_expr(expr) -> str:
     if kind == "BinaryOp":
         return f"({render_expr(expr.left)} {expr.op} {render_expr(expr.right)})"
     if kind == "UnaryOp":
-        return f"({_norm(expr.op)} {render_expr(expr.operand)})"
+        op = _norm(expr.op)
+        if op in _POSTFIX:
+            return f"({render_expr(expr.operand)} {_POSTFIX[op]})"
+        return f"({op} {render_expr(expr.operand)})"
     if kind == "AggCall":
         return f"{expr.func}({'*' if expr.arg is None else render_expr(expr.arg)})"
     raise InterpreterError(f"cannot render {expr!r}")
@@ -72,6 +75,8 @@ def _norm(op: str) -> str:
     return " ".join(op.upper().split())
 
 
+_POSTFIX = {"IS NULL": "IS NULL", "ISNULL": "IS NULL",
+            "IS NOT NULL": "IS NOT NULL", "NOTNULL": "IS NOT NULL"}
 _ARITH = {"+", "-", "*", "/", "%"}
 _COMPARE = {"=", "==", "!=", "<>", "<", "<=", ">", ">="}
 _BOOL = {"AND", "OR"}

@@ -181,7 +181,8 @@ def format_plan(node, depth: int = 0) -> str:
         detail = ", ".join(a if render_expr(e) == a else f"{render_expr(e)} AS {a}"
                            for e, a in node.exprs)
     elif kind == "Join":
-        detail = f"kind={node.kind}, cond={render_expr(node.condition)}"
+        cond = "TRUE" if node.condition is None else render_expr(node.condition)
+        detail = f"kind={node.kind}, cond={cond}"
     elif kind == "Aggregate":
         detail = (f"group={', '.join(render_expr(k) for k in node.group_keys)}, "
                   f"aggs={', '.join(f'{render_expr(a)} AS {n}' for a, n in node.aggs)}")
