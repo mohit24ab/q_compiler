@@ -9,54 +9,10 @@ from ir.dtype import DType
 from ir.expr import AggCall, BinaryOp, ColumnRef, Expr, Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, PlanNode, Project, Scan, Sort
 from ir.printer import format_expr
+from frontend.resolver import Resolver, SemanticError
+from frontend.typecheck import TypeChecker, SemanticTypeError
 
-
-class Scope:
-    """Manages active relation schemas and resolves column references."""
-
-    def __init__(self) -> None:
-        self.schemas: dict[str, list[tuple[str, DType]]] = {}
-        self.table_to_alias: dict[str, str] = {}
-        self.relation_order: list[str] = []
-
-    def add_relation(
-        self, table_name: str, schema: list[tuple[str, DType]], alias: str | None = None
-    ) -> None:
-        rel_key = alias if alias else table_name
-        self.schemas[rel_key] = schema
-        self.relation_order.append(rel_key)
-        if alias:
-            self.table_to_alias[table_name] = alias
-
-    def resolve_column(self, name: str, table: str | None = None) -> ColumnRef:
-        if table is not None:
-            target_rel = table
-            if target_rel not in self.schemas:
-                if table in self.table_to_alias and self.table_to_alias[table] in self.schemas:
-                    target_rel = self.table_to_alias[table]
-                else:
-                    raise ValueError(f"Table '{table}' not found in active scope.")
-
-            rel_schema = self.schemas[target_rel]
-            col_names = [col_name for col_name, _ in rel_schema]
-            if name not in col_names:
-                raise ValueError(f"Column '{name}' not found in table '{table}'.")
-            return ColumnRef(table=target_rel, name=name)
-        else:
-            matches: list[str] = []
-            for rel_name, rel_schema in self.schemas.items():
-                col_names = [col_name for col_name, _ in rel_schema]
-                if name in col_names:
-                    matches.append(rel_name)
-
-            if len(matches) == 0:
-                raise ValueError(f"Unknown column '{name}'.")
-            if len(matches) > 1:
-                raise ValueError(
-                    f"Ambiguous column reference '{name}' found across active tables: {matches}."
-                )
-            return ColumnRef(table=matches[0], name=name)
-
+Scope = Resolver
 
 _BINARY_OPS = {
     exp.Add: "+",
@@ -77,27 +33,39 @@ _BINARY_OPS = {
 _AGG_FUNCS = {"sum", "count", "avg", "min", "max"}
 
 
-def _bind_agg(e: exp.AggFunc, scope: Scope) -> AggCall:
+def _bind_agg(
+    e: exp.AggFunc,
+    scope: Resolver,
+    typechecker: TypeChecker | None = None,
+) -> AggCall:
     func_name = e.key.lower()
     if func_name not in _AGG_FUNCS:
         raise ValueError(f"Unsupported aggregate function: '{e.key}'.")
 
     if func_name == "count":
         if isinstance(e.this, exp.Star) or e.this is None:
-            return AggCall(func="count", arg=None)
-        arg = _bind_expr(e.this, scope)
-        return AggCall(func="count", arg=arg)
+            agg = AggCall(func="count", arg=None)
+        else:
+            arg = _bind_expr(e.this, scope, typechecker)
+            agg = AggCall(func="count", arg=arg)
+    else:
+        if e.this is None:
+            raise ValueError(f"Aggregate '{func_name}' requires an argument.")
+        arg = _bind_expr(e.this, scope, typechecker)
+        agg = AggCall(func=func_name, arg=arg)  # type: ignore[arg-type]
 
-    if e.this is None:
-        raise ValueError(f"Aggregate '{func_name}' requires an argument.")
-
-    arg = _bind_expr(e.this, scope)
-    return AggCall(func=func_name, arg=arg)  # type: ignore[arg-type]
+    if typechecker is not None:
+        typechecker.infer_type(agg, scope)
+    return agg
 
 
-def _bind_expr(e: exp.Expression, scope: Scope) -> Expr:
+def _bind_expr(
+    e: exp.Expression,
+    scope: Resolver,
+    typechecker: TypeChecker | None = None,
+) -> Expr:
     if isinstance(e, exp.Paren):
-        return _bind_expr(e.this, scope)
+        return _bind_expr(e.this, scope, typechecker)
 
     if isinstance(e, exp.Column):
         table_name = e.table if e.table else None
@@ -130,23 +98,42 @@ def _bind_expr(e: exp.Expression, scope: Scope) -> Expr:
 
     if isinstance(e, exp.Is):
         if isinstance(e.expression, exp.Null):
-            return UnaryOp(op="IS NULL", operand=_bind_expr(e.this, scope))
+            operand = _bind_expr(e.this, scope, typechecker)
+            res_op = UnaryOp(op="IS NULL", operand=operand)
+            if typechecker is not None:
+                typechecker.infer_type(res_op, scope)
+            return res_op
     if isinstance(e, exp.Not):
         if isinstance(e.this, exp.Is) and isinstance(e.this.expression, exp.Null):
-            return UnaryOp(op="IS NOT NULL", operand=_bind_expr(e.this.this, scope))
-        return UnaryOp(op="NOT", operand=_bind_expr(e.this, scope))
+            operand = _bind_expr(e.this.this, scope, typechecker)
+            res_op = UnaryOp(op="IS NOT NULL", operand=operand)
+            if typechecker is not None:
+                typechecker.infer_type(res_op, scope)
+            return res_op
+        operand = _bind_expr(e.this, scope, typechecker)
+        res_op = UnaryOp(op="NOT", operand=operand)
+        if typechecker is not None:
+            typechecker.infer_type(res_op, scope)
+        return res_op
 
     if isinstance(e, exp.Neg):
-        return UnaryOp(op="-", operand=_bind_expr(e.this, scope))
+        operand = _bind_expr(e.this, scope, typechecker)
+        res_op = UnaryOp(op="-", operand=operand)
+        if typechecker is not None:
+            typechecker.infer_type(res_op, scope)
+        return res_op
 
     if type(e) in _BINARY_OPS:
         op = _BINARY_OPS[type(e)]
-        left = _bind_expr(e.this, scope)
-        right = _bind_expr(e.expression, scope)
-        return BinaryOp(op=op, left=left, right=right)
+        left = _bind_expr(e.this, scope, typechecker)
+        right = _bind_expr(e.expression, scope, typechecker)
+        bin_op = BinaryOp(op=op, left=left, right=right)
+        if typechecker is not None:
+            typechecker.infer_type(bin_op, scope)
+        return bin_op
 
     if isinstance(e, exp.AggFunc):
-        return _bind_agg(e, scope)
+        return _bind_agg(e, scope, typechecker)
 
     raise ValueError(f"Unsupported expression AST node: {type(e).__name__} ({e})")
 
@@ -182,14 +169,13 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
     table_name = from_table.name
     alias = from_table.alias if from_table.alias else None
 
-    scope = Scope()
+    resolver = Resolver(catalog)
+    typechecker = TypeChecker()
 
     try:
-        table_schema = catalog.schema(table_name)
+        table_schema = resolver.add_table(table_name=table_name, alias=alias)
     except KeyError as exc:
         raise ValueError(f"Table '{table_name}' not found in catalog.") from exc
-
-    scope.add_relation(table_name=table_name, schema=table_schema, alias=alias)
 
     current_plan: PlanNode = Scan(
         table=table_name,
@@ -207,11 +193,9 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
         joined_alias = join_table.alias if join_table.alias else None
 
         try:
-            joined_schema = catalog.schema(joined_name)
+            joined_schema = resolver.add_table(table_name=joined_name, alias=joined_alias)
         except KeyError as exc:
             raise ValueError(f"Table '{joined_name}' not found in catalog.") from exc
-
-        scope.add_relation(table_name=joined_name, schema=joined_schema, alias=joined_alias)
 
         right_scan = Scan(
             table=joined_name,
@@ -222,7 +206,9 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
         on_ast = join_ast.args.get("on")
         if on_ast is not None:
-            condition = _bind_expr(on_ast, scope)
+            condition = _bind_expr(on_ast, resolver, typechecker)
+            typechecker.check_no_aggregates(condition, context_name="JOIN ON")
+            typechecker.check_boolean_condition(condition, resolver, context_name="JOIN ON")
         else:
             condition = Literal(value=True, dtype=DType.BOOL)
 
@@ -239,7 +225,9 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
     where_clause = ast.args.get("where")
     if where_clause is not None:
-        where_pred = _bind_expr(where_clause.this, scope)
+        where_pred = _bind_expr(where_clause.this, resolver, typechecker)
+        typechecker.check_no_aggregates(where_pred, context_name="WHERE")
+        typechecker.check_boolean_condition(where_pred, resolver, context_name="WHERE")
         current_plan = Filter(child=current_plan, predicate=where_pred)
 
     group_clause = ast.args.get("group")
@@ -249,17 +237,19 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
     has_group_by = group_clause is not None
     has_aggs = any(e.find(exp.AggFunc) is not None for e in select_items) or (having_clause is not None)
 
+    group_keys: list[Expr] = []
+    aggs: list[tuple[AggCall, str]] = []
+    registered_aggs: dict[str, str] = {}
+
     if has_group_by or has_aggs:
-        group_keys: list[Expr] = []
         if group_clause is not None:
             for ge in group_clause.expressions:
-                group_keys.append(_bind_expr(ge, scope))
-
-        aggs: list[tuple[AggCall, str]] = []
-        registered_aggs: dict[str, str] = {}
+                gk = _bind_expr(ge, resolver, typechecker)
+                typechecker.check_no_aggregates(gk, context_name="GROUP BY")
+                group_keys.append(gk)
 
         def register_agg_call(agg_node: exp.AggFunc, explicit_alias: str | None = None) -> str:
-            bound_agg = _bind_agg(agg_node, scope)
+            bound_agg = _bind_agg(agg_node, resolver, typechecker)
             alias = explicit_alias if explicit_alias else _get_agg_alias(bound_agg)
             key = repr(agg_node)
             if key not in registered_aggs:
@@ -285,15 +275,16 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
         )
 
         if having_clause is not None:
-            having_pred = _bind_expr(having_clause.this, scope)
+            having_pred = _bind_expr(having_clause.this, resolver, typechecker)
+            typechecker.check_boolean_condition(having_pred, (current_plan, resolver), context_name="HAVING")
             current_plan = Filter(child=current_plan, predicate=having_pred)
 
     project_exprs: list[tuple[Expr, str]] = []
     is_wildcard = any(isinstance(e, exp.Star) for e in select_items)
 
     if is_wildcard:
-        for rel_name in scope.relation_order:
-            for col_name, _ in scope.schemas[rel_name]:
+        for rel_name in resolver.relation_order:
+            for col_name, _ in resolver.schemas[rel_name]:
                 project_exprs.append((ColumnRef(table=rel_name, name=col_name), col_name))
     else:
         for se in select_items:
@@ -304,7 +295,7 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
                 alias = se.name
                 expr_ast = se
             elif isinstance(se, exp.AggFunc):
-                bound_agg = _bind_agg(se, scope)
+                bound_agg = _bind_agg(se, resolver, typechecker)
                 alias = _get_agg_alias(bound_agg)
                 expr_ast = se
             else:
@@ -315,26 +306,50 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
                 col_ref = ColumnRef(table=None, name=alias)
                 project_exprs.append((col_ref, alias))
             else:
-                bound_e = _bind_expr(expr_ast, scope)
+                bound_e = _bind_expr(expr_ast, resolver, typechecker)
                 project_exprs.append((bound_e, alias))
+
+    proj_aliases = {alias: expr for expr, alias in project_exprs}
+    agg_aliases = {alias for _, alias in aggs}
+
+    if has_group_by or has_aggs:
+        typechecker.check_group_by_projections(
+            project_exprs=project_exprs,
+            group_keys=group_keys,
+            agg_aliases=agg_aliases,
+            proj_aliases=proj_aliases,
+        )
+
+    for p_expr, _ in project_exprs:
+        typechecker.infer_type(p_expr, (current_plan, resolver))
 
     current_plan = Project(child=current_plan, exprs=project_exprs)
 
     order_clause = ast.args.get("order")
     if order_clause is not None:
         sort_keys: list[tuple[Expr, bool]] = []
-        proj_aliases = {alias: expr for expr, alias in project_exprs}
         for ordered in order_clause.expressions:
             is_desc = bool(ordered.args.get("desc", False))
             order_ast = ordered.this
             if isinstance(order_ast, exp.Column) and not order_ast.table and order_ast.name in proj_aliases:
                 try:
-                    sort_expr = scope.resolve_column(name=order_ast.name)
+                    sort_expr = resolver.resolve_column(name=order_ast.name)
                 except ValueError:
                     sort_expr = ColumnRef(table=None, name=order_ast.name)
             else:
-                sort_expr = _bind_expr(order_ast, scope)
+                sort_expr = _bind_expr(order_ast, resolver, typechecker)
             sort_keys.append((sort_expr, is_desc))
+
+        if has_group_by or has_aggs:
+            typechecker.check_group_by_order_by(
+                sort_keys=sort_keys,
+                group_keys=group_keys,
+                agg_aliases=agg_aliases,
+                proj_aliases=proj_aliases,
+            )
+
+        for s_expr, _ in sort_keys:
+            typechecker.infer_type(s_expr, (current_plan, resolver))
 
         current_plan = Sort(child=current_plan, keys=sort_keys)
 
