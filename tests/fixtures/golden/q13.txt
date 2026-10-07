@@ -1,0 +1,3 @@
+Project[lineitem.return_flag AS return_flag, lineitem.status AS status, sum_qty, sum_base_price, avg_disc, min_price, max_price, count_order]
+  Aggregate[group=lineitem.return_flag, lineitem.status, aggs=sum(lineitem.quantity) AS sum_qty, sum(lineitem.extended_price) AS sum_base_price, avg(lineitem.discount) AS avg_disc, min(lineitem.extended_price) AS min_price, max(lineitem.extended_price) AS max_price, count(*) AS count_order]
+    Scan[lineitem]
