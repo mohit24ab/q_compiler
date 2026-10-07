@@ -1,0 +1,311 @@
+"""Phase C6 benchmark runner: the query suite under {interpreted, compiled} x {unoptimized, optimized}.
+
+    python -m bench.runner --scale bench                 # all 20 golden queries
+    python -m bench.runner --scale tiny --queries q01 q07 --runs 3
+
+The 2x2 separates the optimizer's contribution (interpreted_unoptimized vs
+interpreted_optimized) from compilation's (interpreted_optimized vs compiled_optimized).
+Two more configurations turn operator fusion (Phase C5) off, so its own contribution can
+be read off too, on plans the optimizer has and hasn't already pruned:
+compiled_unoptimized_unfused and compiled_optimized_unfused.
+
+What is measured, per query and configuration:
+  runtime_ms       median wall-clock time of `--runs` timed runs, after `--warmup` discarded
+                   runs. Execution only: SQL binding, optimizing and code generation happen
+                   once, before timing, as they would for a prepared query.
+  compile_ms       for compiled configurations, generate() + Python's compile(), measured once.
+  peak_memory_kb   tracemalloc peak during one extra run, kept apart from the timed runs
+                   because tracing slows everything down (numpy reports its allocations).
+  rows_scanned     base-table rows read by the plan's Scans (Person A's definition).
+  cells_scanned    rows x columns each Scan reads (its output columns plus those its pushed
+                   predicate needs), so column pruning shows up.
+  rows_out         result rows.
+  matches_reference  whether the result equals interpret(unoptimized plan) (Contract §7).
+                   A configuration that gives a wrong answer is still timed, but reported,
+                   and the runner exits non-zero.
+
+Inputs: the golden queries in tests/fixtures/queries/ and the generator in
+bench/data/generate.py (both Person A's), converted to runtime Tables once up front so
+every configuration measures query work, not Arrow conversion. Binding goes through
+frontend.binder.parse_and_bind and then bench.aliases.resolve_aliases (see that module).
+
+The optimizer is `optimizer.optimize` when Person B's package provides it, otherwise the
+identity, and the `optimizer` column says which one ran. The CSV starts with Person A's
+columns (bench/report.py: CSV_COLUMNS) so `bench.report.generate_charts(path)` reads it.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import statistics
+import sys
+import time
+import tracemalloc
+from dataclasses import asdict, dataclass, fields
+from pathlib import Path
+
+from bench.aliases import resolve_aliases
+from codegen import generate
+from codegen.runner import compile_module
+from runtime import Table, compare_tables, interpret
+from runtime.expr_eval import node_kind
+
+ROOT = Path(__file__).resolve().parent.parent
+QUERY_DIR = ROOT / "tests" / "fixtures" / "queries"
+
+# name -> (engine, optimized, fused)
+CONFIGURATIONS = {
+    "interpreted_unoptimized": ("interpreted", False, None),
+    "interpreted_optimized": ("interpreted", True, None),
+    "compiled_unoptimized": ("compiled", False, True),
+    "compiled_optimized": ("compiled", True, True),
+    "compiled_unoptimized_unfused": ("compiled", False, False),
+    "compiled_optimized_unfused": ("compiled", True, False),
+}
+
+
+@dataclass
+class Measurement:
+    # Person A's columns first, in A's order
+    query: str
+    configuration: str
+    runtime_ms: float
+    rows_scanned: int
+    peak_memory_kb: float
+    # ours
+    compile_ms: float | None
+    cells_scanned: int
+    rows_out: int
+    runs: int
+    matches_reference: bool
+    optimizer: str
+    scale: str
+
+
+CSV_COLUMNS = [f.name for f in fields(Measurement)]
+
+
+# ---------------------------------------------------------------------- workload
+
+def load_queries(names=None) -> dict[str, str]:
+    queries = {p.stem: p.read_text(encoding="utf-8").strip()
+               for p in sorted(QUERY_DIR.glob("q*.sql"))}
+    if names:
+        unknown = sorted(set(names) - set(queries))
+        if unknown:
+            raise SystemExit(f"unknown queries {unknown}; have {sorted(queries)}")
+        queries = {n: queries[n] for n in names}
+    return queries
+
+
+def load_data(scale: str, seed: int = 42):
+    """(catalog, tables) with tables already converted to runtime Tables."""
+    from bench.data.generate import create_test_catalog, generate_dataset
+    catalog = create_test_catalog(scale=scale, seed=seed)
+    arrow = generate_dataset(scale=scale, seed=seed)
+    return catalog, {name: Table.from_arrow(t, name) for name, t in arrow.items()}
+
+
+def find_optimizer():
+    """(optimize, label): Person B's optimizer if importable, else the identity."""
+    try:
+        import optimizer
+        optimize = getattr(optimizer, "optimize", None)
+    except ImportError:
+        optimize = None
+    if callable(optimize):
+        return optimize, "optimizer.optimize"
+    return (lambda plan, catalog: (plan, [])), "identity (optimizer.optimize not available)"
+
+
+def bind(sql: str, catalog):
+    from frontend.binder import parse_and_bind
+    return resolve_aliases(parse_and_bind(sql, catalog), catalog)
+
+
+# ---------------------------------------------------------------------- plan metrics
+
+def _scans(plan):
+    if node_kind(plan) == "Scan":
+        yield plan
+    for child in plan.children:
+        yield from _scans(child)
+
+
+def rows_scanned(plan, tables) -> int:
+    return sum(tables[s.table].num_rows for s in _scans(plan))
+
+
+def cells_scanned(plan, tables, catalog) -> int:
+    from codegen.exprgen import column_refs
+    total = 0
+    for s in _scans(plan):
+        schema = s.table_schema or catalog.schema(s.table)
+        cols = set(s.columns) if s.columns is not None else {n for n, _ in schema}
+        cols |= {r.name for r in column_refs(s.pushed_predicate)}
+        total += tables[s.table].num_rows * len(cols)
+    return total
+
+
+def is_ordered(sql: str) -> bool:
+    return "order by" in sql.lower()
+
+
+# ---------------------------------------------------------------------- measuring
+
+def _median_ms(fn, runs: int, warmup: int):
+    """(median ms of `runs` timed calls, the first call's result, runs timed).
+    The first `warmup` calls are not timed."""
+    first = fn() if warmup > 0 else None
+    for _ in range(warmup - 1):
+        fn()
+    timings = []
+    for _ in range(max(1, runs)):
+        t0 = time.perf_counter()
+        out = fn()
+        timings.append(time.perf_counter() - t0)
+        first = out if first is None else first
+    return statistics.median(timings) * 1000.0, first, len(timings)
+
+
+def _peak_kb(fn) -> float:
+    tracemalloc.start()
+    try:
+        fn()
+        return tracemalloc.get_traced_memory()[1] / 1024.0
+    finally:
+        tracemalloc.stop()
+
+
+def measure_query(name, sql, catalog, tables, optimize, optimizer_label, scale,
+                  configs=tuple(CONFIGURATIONS), runs=5, warmup=1) -> list[Measurement]:
+    plan = bind(sql, catalog)
+    optimized, _traces = optimize(plan, catalog)
+    reference = interpret(plan, tables)
+    out = []
+    for config in configs:
+        engine, use_opt, fused = CONFIGURATIONS[config]
+        p = optimized if use_opt else plan
+        compile_ms = None
+        if engine == "interpreted":
+            def fn(p=p):
+                return interpret(p, tables)
+        else:
+            t0 = time.perf_counter()
+            run = compile_module(generate(p, catalog, mode="compiled", fuse=fused))["run"]
+            compile_ms = round((time.perf_counter() - t0) * 1000.0, 3)
+
+            def fn(run=run):
+                return run(tables)
+        runtime_ms, result, timed = _median_ms(fn, runs, warmup)
+        ok, _ = compare_tables(reference, result, ordered=is_ordered(sql))
+        out.append(Measurement(
+            query=name, configuration=config, runtime_ms=round(runtime_ms, 3),
+            rows_scanned=rows_scanned(p, tables), peak_memory_kb=round(_peak_kb(fn), 2),
+            compile_ms=compile_ms, cells_scanned=cells_scanned(p, tables, catalog),
+            rows_out=result.num_rows, runs=timed, matches_reference=ok,
+            optimizer=optimizer_label if use_opt else "none", scale=scale))
+    return out
+
+
+def run_suite(scale="tiny", queries=None, configs=tuple(CONFIGURATIONS), runs=5, warmup=1,
+              seed=42, progress=None) -> list[Measurement]:
+    catalog, tables = load_data(scale, seed)
+    optimize, label = find_optimizer()
+    results = []
+    for name, sql in load_queries(queries).items():
+        rows = measure_query(name, sql, catalog, tables, optimize, label, scale,
+                             configs=configs, runs=runs, warmup=warmup)
+        results.extend(rows)
+        if progress:
+            progress(name, rows)
+    return results
+
+
+# ---------------------------------------------------------------------- output
+
+def write_csv(results: list[Measurement], path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        w.writeheader()
+        for m in results:
+            w.writerow(asdict(m))
+    return path
+
+
+def _geomean(xs):
+    xs = [x for x in xs if x and x > 0 and math.isfinite(x)]
+    return math.exp(sum(math.log(x) for x in xs) / len(xs)) if xs else float("nan")
+
+
+def summary(results: list[Measurement]) -> str:
+    """Markdown: per-query times and the three ratios the 2x2 (+ fusion) is for."""
+    by = {(m.query, m.configuration): m for m in results}
+    queries = sorted({m.query for m in results})
+    cols = [c for c in CONFIGURATIONS if any((q, c) in by for q in queries)]
+
+    def ratio(q, a, b):
+        if (q, a) in by and (q, b) in by and by[(q, b)].runtime_ms > 0:
+            return by[(q, a)].runtime_ms / by[(q, b)].runtime_ms
+        return None
+
+    ratios = {
+        "optimizer, interpreted": ("interpreted_unoptimized", "interpreted_optimized"),
+        "optimizer, compiled": ("compiled_unoptimized", "compiled_optimized"),
+        "compilation": ("interpreted_optimized", "compiled_optimized"),
+        "fusion, unoptimized": ("compiled_unoptimized_unfused", "compiled_unoptimized"),
+        "fusion, optimized": ("compiled_optimized_unfused", "compiled_optimized"),
+        "total": ("interpreted_unoptimized", "compiled_optimized"),
+    }
+    head = ["query", *[f"{c} ms" for c in cols], *[f"{r} x" for r in ratios]]
+    lines = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    for q in queries:
+        cells = [q]
+        for c in cols:
+            m = by.get((q, c))
+            cells.append("" if m is None else f"{m.runtime_ms:.2f}" + ("" if m.matches_reference else " WRONG"))
+        for a, b in ratios.values():
+            r = ratio(q, a, b)
+            cells.append("" if r is None else f"{r:.2f}")
+        lines.append("| " + " | ".join(cells) + " |")
+    geo = ["geomean", *["" for _ in cols],
+           *[f"{_geomean([ratio(q, a, b) for q in queries]):.2f}" for a, b in ratios.values()]]
+    lines.append("| " + " | ".join(geo) + " |")
+    return "\n".join(lines)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--scale", default="tiny", choices=["tiny", "bench"])
+    ap.add_argument("--queries", nargs="*", help="e.g. q01 q07 (default: all)")
+    ap.add_argument("--configs", nargs="*", choices=list(CONFIGURATIONS), default=list(CONFIGURATIONS))
+    ap.add_argument("--runs", type=int, default=5)
+    ap.add_argument("--warmup", type=int, default=1)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--out", help="CSV path (default: bench/results/runner_<scale>.csv)")
+    args = ap.parse_args(argv)
+
+    def progress(name, rows):
+        times = "  ".join(f"{m.configuration}={m.runtime_ms:.1f}ms" + ("" if m.matches_reference else "(WRONG)")
+                          for m in rows)
+        print(f"{name}: {times}", flush=True)
+
+    _, label = find_optimizer()
+    print(f"scale={args.scale} runs={args.runs} warmup={args.warmup} optimizer={label}", flush=True)
+    results = run_suite(args.scale, args.queries, args.configs, args.runs, args.warmup,
+                        args.seed, progress)
+    out = write_csv(results, args.out or ROOT / "bench" / "results" / f"runner_{args.scale}.csv")
+    print(f"\nwrote {len(results)} rows to {out}\n")
+    print(summary(results))
+    wrong = [f"{m.query}/{m.configuration}" for m in results if not m.matches_reference]
+    if wrong:
+        print(f"\nWRONG ANSWERS: {wrong}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
