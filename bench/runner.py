@@ -12,7 +12,9 @@ compiled_unoptimized_unfused and compiled_optimized_unfused.
 What is measured, per query and configuration:
   runtime_ms       median wall-clock time of `--runs` timed runs, after `--warmup` discarded
                    runs. Execution only: SQL binding, optimizing and code generation happen
-                   once, before timing, as they would for a prepared query.
+                   once, before timing, as they would for a prepared query. The
+                   configurations of a query are timed round-robin, one run each per round,
+                   so a slow patch of the machine hits them all alike.
   compile_ms       for compiled configurations, generate() + Python's compile(), measured once.
   peak_memory_kb   tracemalloc peak during one extra run, kept apart from the timed runs
                    because tracing slows everything down (numpy reports its allocations).
@@ -20,6 +22,9 @@ What is measured, per query and configuration:
   cells_scanned    rows x columns each Scan reads (its output columns plus those its pushed
                    predicate needs), so column pruning shows up.
   rows_out         result rows.
+  fused_pipelines  for compiled configurations, how many Scan/Filter/Project chains were
+                   fused; when the fused and unfused sources are identical (0 here), the
+                   "fusion" ratio is only noise and the summary leaves it out.
   matches_reference  whether the result equals interpret(unoptimized plan) (Contract §7).
                    A configuration that gives a wrong answer is still timed, but reported,
                    and the runner exits non-zero.
@@ -79,6 +84,7 @@ class Measurement:
     rows_out: int
     runs: int
     matches_reference: bool
+    fused_pipelines: int | None   # compiled only: "# Fused pipeline" sections in the source
     optimizer: str
     scale: str
 
@@ -154,21 +160,6 @@ def is_ordered(sql: str) -> bool:
 
 # ---------------------------------------------------------------------- measuring
 
-def _median_ms(fn, runs: int, warmup: int):
-    """(median ms of `runs` timed calls, the first call's result, runs timed).
-    The first `warmup` calls are not timed."""
-    first = fn() if warmup > 0 else None
-    for _ in range(warmup - 1):
-        fn()
-    timings = []
-    for _ in range(max(1, runs)):
-        t0 = time.perf_counter()
-        out = fn()
-        timings.append(time.perf_counter() - t0)
-        first = out if first is None else first
-    return statistics.median(timings) * 1000.0, first, len(timings)
-
-
 def _peak_kb(fn) -> float:
     tracemalloc.start()
     try:
@@ -178,34 +169,61 @@ def _peak_kb(fn) -> float:
         tracemalloc.stop()
 
 
+def time_interleaved(fns: dict, runs: int, warmup: int) -> tuple[dict, dict]:
+    """({key: median ms}, {key: first result}) for zero-argument callables.
+
+    Warm-ups first, then `runs` rounds that each time every callable once, in turn.
+    Interleaving means a slow stretch of the machine (another process, thermal or
+    power throttling) lands on every configuration alike instead of on whichever
+    happened to be running; one configuration after another measured the very same
+    code at both 4.7 and 8.3 ms on a laptop.
+    """
+    first = {}
+    for key, fn in fns.items():
+        for _ in range(warmup):
+            out = fn()
+            first.setdefault(key, out)
+    timings = {key: [] for key in fns}
+    for _ in range(max(1, runs)):
+        for key, fn in fns.items():
+            t0 = time.perf_counter()
+            out = fn()
+            timings[key].append(time.perf_counter() - t0)
+            first.setdefault(key, out)
+    return {k: statistics.median(v) * 1000.0 for k, v in timings.items()}, first
+
+
 def measure_query(name, sql, catalog, tables, optimize, optimizer_label, scale,
                   configs=tuple(CONFIGURATIONS), runs=5, warmup=1) -> list[Measurement]:
     plan = bind(sql, catalog)
     optimized, _traces = optimize(plan, catalog)
     reference = interpret(plan, tables)
-    out = []
+    fns, compile_ms, plans, pipelines = {}, {}, {}, {}
     for config in configs:
         engine, use_opt, fused = CONFIGURATIONS[config]
-        p = optimized if use_opt else plan
-        compile_ms = None
+        plans[config] = p = optimized if use_opt else plan
         if engine == "interpreted":
-            def fn(p=p):
-                return interpret(p, tables)
+            fns[config] = lambda p=p: interpret(p, tables)
+            compile_ms[config], pipelines[config] = None, None
         else:
             t0 = time.perf_counter()
-            run = compile_module(generate(p, catalog, mode="compiled", fuse=fused))["run"]
-            compile_ms = round((time.perf_counter() - t0) * 1000.0, 3)
-
-            def fn(run=run):
-                return run(tables)
-        runtime_ms, result, timed = _median_ms(fn, runs, warmup)
-        ok, _ = compare_tables(reference, result, ordered=is_ordered(sql))
+            source = generate(p, catalog, mode="compiled", fuse=fused)
+            run = compile_module(source)["run"]
+            compile_ms[config] = round((time.perf_counter() - t0) * 1000.0, 3)
+            pipelines[config] = source.count("# Fused pipeline")
+            fns[config] = lambda run=run: run(tables)
+    medians, results = time_interleaved(fns, runs, warmup)
+    out = []
+    for config in configs:
+        ok, _ = compare_tables(reference, results[config], ordered=is_ordered(sql))
+        p = plans[config]
         out.append(Measurement(
-            query=name, configuration=config, runtime_ms=round(runtime_ms, 3),
-            rows_scanned=rows_scanned(p, tables), peak_memory_kb=round(_peak_kb(fn), 2),
-            compile_ms=compile_ms, cells_scanned=cells_scanned(p, tables, catalog),
-            rows_out=result.num_rows, runs=timed, matches_reference=ok,
-            optimizer=optimizer_label if use_opt else "none", scale=scale))
+            query=name, configuration=config, runtime_ms=round(medians[config], 3),
+            rows_scanned=rows_scanned(p, tables), peak_memory_kb=round(_peak_kb(fns[config]), 2),
+            compile_ms=compile_ms[config], cells_scanned=cells_scanned(p, tables, catalog),
+            rows_out=results[config].num_rows, runs=max(1, runs), matches_reference=ok,
+            fused_pipelines=pipelines[config],
+            optimizer=optimizer_label if CONFIGURATIONS[config][1] else "none", scale=scale))
     return out
 
 
@@ -248,9 +266,11 @@ def summary(results: list[Measurement]) -> str:
     cols = [c for c in CONFIGURATIONS if any((q, c) in by for q in queries)]
 
     def ratio(q, a, b):
-        if (q, a) in by and (q, b) in by and by[(q, b)].runtime_ms > 0:
-            return by[(q, a)].runtime_ms / by[(q, b)].runtime_ms
-        return None
+        if (q, a) not in by or (q, b) not in by or by[(q, b)].runtime_ms <= 0:
+            return None
+        if "unfused" in a and not by[(q, b)].fused_pipelines:
+            return None  # nothing fused: both configurations ran the same code
+        return by[(q, a)].runtime_ms / by[(q, b)].runtime_ms
 
     ratios = {
         "optimizer, interpreted": ("interpreted_unoptimized", "interpreted_optimized"),
@@ -274,6 +294,8 @@ def summary(results: list[Measurement]) -> str:
     geo = ["geomean", *["" for _ in cols],
            *[f"{_geomean([ratio(q, a, b) for q in queries]):.2f}" for a, b in ratios.values()]]
     lines.append("| " + " | ".join(geo) + " |")
+    lines.append("")
+    lines.append("A blank fusion ratio means no chain fused: both configurations ran the same code.")
     return "\n".join(lines)
 
 
