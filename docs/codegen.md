@@ -358,3 +358,43 @@ What the numbers say:
   q11 fuses nothing, so its fused and unfused code is identical, yet it measured 342 and
   259 ms. Treat differences under about 1.3x on those queries as noise. The ratios above
   2x are stable across the three full runs made while building the runner.
+
+
+## The demo (Phase C7)
+
+```bash
+python demo.py --query q10 --scale bench
+python demo.py "SELECT nation, COUNT(*) AS n FROM customer GROUP BY nation ORDER BY n DESC"
+python demo.py --list
+```
+
+One query, through every stage, in order:
+
+1. the SQL;
+2. the bound plan (`frontend.binder.parse_and_bind`), with a note if alias qualifiers had
+   to be resolved (`bench/aliases.py`);
+3. the optimized plan (`optimizer.optimize`, or the identity when it isn't available,
+   which the heading says);
+4. what each optimizer pass changed (Person B's `render_traces`, as coloured diffs);
+5. the generated module, numbered, with the time it took to generate and compile;
+6. the result rows, and whether they are identical to the reference interpreter on the
+   *unoptimized* plan (the exit code is 1 if not);
+7. the median time of the naive interpreter, the interpreter on the optimized plan, the
+   compiled unoptimized plan and the compiled optimized plan, with speedups over naive.
+
+Colour only when stdout is a terminal (`NO_COLOR`, `--color never|always`); box-drawing
+characters only when stdout can encode them (`--ascii` forces plain ASCII).
+
+`bench/samples/` holds the generated source for five queries, one per shape the compiler
+handles, produced through the real pipeline (binder, B's optimizer, codegen):
+
+| file | what it shows |
+|---|---|
+| `q01_scan_filter_sort_limit.py` | pushed predicate, pruned scan, top-k |
+| `q05_kleene_boolean_predicate.py` | `(a AND b) OR (c AND NOT d)` as mask algebra with NULLs |
+| `q10_three_way_join_topk.py` | two hash joins over filtered, pruned scans; sort + limit |
+| `q14_group_by_having.py` | hash aggregation, avg as sum/count, HAVING on an aggregate |
+| `q20_join_group_by_having_order_by.py` | everything at once |
+
+`python demo.py --samples bench/samples` regenerates them; `tests/test_codegen_demo.py`
+runs each committed sample and checks its answer against the interpreter.

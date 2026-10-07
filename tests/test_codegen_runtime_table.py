@@ -82,3 +82,15 @@ def test_compare_tables_order_and_float_tolerance():
     assert compare_tables(t, nudged, ordered=True)[0]
     ok, why = compare_tables(t, t.slice(0, 2))
     assert not ok and "row counts" in why
+
+
+def test_format_shows_output_names_and_qualifies_only_clashes():
+    t = make()
+    lines = t.format().splitlines()
+    assert lines[0].split(" | ")[0] == "id"                  # not "t.id"
+    assert "NULL" in lines[3] and "1.5" in lines[2]
+    u = Table.from_pydict({"id": [7, 8, 9]}, SCHEMA[:1], table="u")
+    joined = Table(t.columns + u.columns)                    # two "id" columns
+    header = [h.strip() for h in joined.format().splitlines()[0].split(" | ")]
+    assert header == ["t.id", "t.name", "t.score", "u.id"]
+    assert "(3 rows total)" in t.format(max_rows=2)

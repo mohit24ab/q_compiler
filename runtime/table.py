@@ -234,7 +234,10 @@ class Table:
 
     # ---------------------------------------------------------------- display
     def format(self, max_rows: int = 20) -> str:
-        names = self.qualified_names()
+        # The names the query gave its output; table-qualified only when they would clash.
+        names = self.column_names
+        if len(set(names)) < len(names):
+            names = self.qualified_names()
         def cell(v):
             if v is None:
                 return "NULL"
