@@ -239,3 +239,53 @@ def test_dispatch_works_for_scan_subclasses():
         pass
     out = interpret(MockScan(table="customer", columns=["name"], pushed_predicate=None), TABLES)
     assert out.to_pydict() == {"name": ["ann", "bob", "cyd"]}
+
+
+# ------------------------------------------------------------------ join candidates (Phase C6)
+# The interpreter indexes equality conjuncts so bench-scale joins finish. The index may only
+# skip pairs that can't match: against the plain all-pairs loop, the output must be the
+# same rows in the same order.
+
+def _all_pairs(monkeypatch):
+    import runtime.interpreter as interp
+    monkeypatch.setattr(interp, "_candidate_finder",
+                        lambda condition, left, right, rows: (lambda lrow: range(len(rows))))
+
+
+def _same_as_all_pairs(plan, monkeypatch, tables=TABLES):
+    from runtime import compare_tables
+    indexed = interpret(plan, tables)
+    with monkeypatch.context() as m:
+        _all_pairs(m)
+        everything = interpret(plan, tables)
+    ok, why = compare_tables(everything, indexed, ordered=True)
+    assert ok, why
+    return indexed
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_indexed_join_equals_all_pairs_join(seed, monkeypatch):
+    from test_codegen_join_aggregate_sort import _PlanFuzzer
+    plan, _ = _PlanFuzzer(seed).pipeline()
+    _same_as_all_pairs(plan, monkeypatch)
+
+
+def test_indexed_join_key_types(monkeypatch):
+    from runtime._compat import Join
+    left = Table.from_pydict({"k": [1, 2, None, 3], "d": ["2024-01-01", "2023-12-31", None, "2024-01-02"]},
+                             [("k", DType.INT), ("d", DType.STRING)], "l")
+    right = Table.from_pydict(
+        {"f": [1.0, 2.5, None, 3.0, 1.0],
+         "day": [datetime.date(2024, 1, 1), datetime.date(2024, 1, 2), None,
+                 datetime.date(2024, 1, 2), datetime.date(2024, 1, 1)]},
+        [("f", DType.FLOAT), ("day", DType.DATE)], "r")
+    tables = {"l": left, "r": right}
+    int_float = Join(left=scan("l"), right=scan("r"), kind="left",
+                     condition=op("=", col("k", "l"), col("f", "r")))
+    out = _same_as_all_pairs(int_float, monkeypatch, tables)
+    assert [(r[0], r[2]) for r in out.to_rows()] == [(1, 1.0), (1, 1.0), (2, None), (None, None), (3, 3.0)]
+    # STRING = DATE coerces in SQL but not in Python's ==: it must not be indexed
+    str_date = Join(left=scan("l"), right=scan("r"), kind="inner",
+                    condition=op("=", col("d", "l"), col("day", "r")))
+    out = _same_as_all_pairs(str_date, monkeypatch, tables)
+    assert sorted(r[1] for r in out.to_rows()) == ["2024-01-01", "2024-01-01", "2024-01-02", "2024-01-02"]

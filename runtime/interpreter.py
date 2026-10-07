@@ -1,9 +1,17 @@
 """Naive reference interpreter: `interpret(plan, tables) -> Table`.
 
 Deliberately the slow path. Every operator converts its input to Python row tuples,
-does the obvious thing, and builds a new Table. Joins are nested loops. Nothing here is
-clever, because this is the oracle every other component (optimizer, generated code) is
-checked against (Contract §7).
+does the obvious thing, and builds a new Table. Nothing here is clever, because this is
+the oracle every other component (optimizer, generated code) is checked against
+(Contract §7).
+
+The one concession: a join evaluates its condition on every *candidate* pair, and when
+the condition has equality conjuncts (`l.a = r.b AND ...`) the candidates come from a
+hash index on them instead of from all pairs, which is what makes a 100k x 25k join
+finish. The index only skips pairs whose keys differ, which can never satisfy the
+condition; the full condition is still evaluated on every pair that remains, so it alone
+decides. Output order is unchanged: left rows in order, each with its matches in right
+order.
 
 Semantics not covered by expr_eval.py:
   * Aggregates ignore NULL inputs. count(*) counts rows; count(x) counts non-NULL x.
@@ -19,10 +27,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from runtime.expr_eval import (
-    InterpreterError, Scope, agg_result_dtype, evaluate, expr_key, infer_dtype,
+    InterpreterError, Scope, _norm, agg_result_dtype, evaluate, expr_key, infer_dtype,
     is_true, node_kind, render_expr,
 )
-from runtime.table import Table
+from runtime.table import Table, find_columns
 
 
 @dataclass
@@ -105,12 +113,13 @@ class _Interpreter:
         scope = Scope(combined)
         right_rows = right.to_rows()
         null_right = (None,) * len(right.columns)
+        candidates = _candidate_finder(node.condition, left, right, right_rows)
 
         out = []
         for lrow in left.to_rows():
             matched = False
-            for rrow in right_rows:
-                row = lrow + rrow
+            for j in candidates(lrow):
+                row = lrow + right_rows[j]
                 if node.condition is None or is_true(evaluate(node.condition, row, scope)):
                     out.append(row)
                     matched = True
@@ -215,3 +224,84 @@ class _Acc:
         if self.func == "avg":
             return None if self.count == 0 else self.total / self.count
         return self.best
+
+
+# ---------------------------------------------------------------------- join candidates
+
+def _candidate_finder(condition, left: Table, right: Table, right_rows: list):
+    """`lrow -> right row indices worth evaluating the condition on`, in right order.
+
+    All of them, unless the condition has equality conjuncts with one side per input
+    and comparable types; then only the right rows whose keys equal the left row's.
+    """
+    everything = range(len(right_rows))
+    keys = _equi_keys(condition, left, right)
+    if not keys:
+        return lambda lrow: everything
+    lscope, rscope = Scope(left.take([])), Scope(right.take([]))
+    index: dict[tuple, list[int]] = {}
+    for j, rrow in enumerate(right_rows):
+        key = tuple(evaluate(r, rrow, rscope) for _, r in keys)
+        if None not in key:  # NULL = anything is never TRUE
+            index.setdefault(key, []).append(j)
+
+    def candidates(lrow):
+        key = tuple(evaluate(l_expr, lrow, lscope) for l_expr, _ in keys)
+        return () if None in key else index.get(key, ())
+    return candidates
+
+
+_NUMERIC = {"INT", "FLOAT"}
+
+
+def _equi_keys(condition, left: Table, right: Table) -> list[tuple]:
+    """(left expr, right expr) for each `a = b` conjunct that splits across the inputs.
+
+    Only when both sides have the same type (or are both numeric): Python's == then
+    agrees with SQL's on every pair the condition could accept. Anything else, a DATE
+    compared to a STRING say, stays out of the index and is left to the condition.
+    """
+    if condition is None:
+        return []
+    lscope, rscope = Scope(left.take([])), Scope(right.take([]))
+
+    def side(expr):
+        refs = _column_refs(expr)
+        in_left = bool(refs) and all(find_columns(left.columns, r.name, r.table) for r in refs)
+        in_right = bool(refs) and all(find_columns(right.columns, r.name, r.table) for r in refs)
+        return "L" if in_left and not in_right else "R" if in_right and not in_left else None
+
+    keys = []
+    for c in _conjuncts(condition):
+        if node_kind(c) != "BinaryOp" or _norm(c.op) not in ("=", "=="):
+            continue
+        sides = (side(c.left), side(c.right))
+        if sides not in (("L", "R"), ("R", "L")):
+            continue
+        l_expr, r_expr = (c.left, c.right) if sides == ("L", "R") else (c.right, c.left)
+        try:
+            lt, rt = infer_dtype(l_expr, lscope).name, infer_dtype(r_expr, rscope).name
+        except InterpreterError:
+            continue
+        if lt == rt or {lt, rt} <= _NUMERIC:
+            keys.append((l_expr, r_expr))
+    return keys
+
+
+def _conjuncts(expr) -> list:
+    if node_kind(expr) == "BinaryOp" and _norm(expr.op) == "AND":
+        return _conjuncts(expr.left) + _conjuncts(expr.right)
+    return [expr]
+
+
+def _column_refs(expr) -> list:
+    kind = node_kind(expr)
+    if kind == "ColumnRef":
+        return [expr]
+    if kind == "UnaryOp":
+        return _column_refs(expr.operand)
+    if kind == "BinaryOp":
+        return _column_refs(expr.left) + _column_refs(expr.right)
+    if kind == "AggCall":
+        return [] if expr.arg is None else _column_refs(expr.arg)
+    return []
