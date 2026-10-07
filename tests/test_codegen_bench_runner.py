@@ -90,7 +90,20 @@ def test_runner_measures_every_configuration_and_every_answer_is_right(tiny_rows
     q01 = {m.configuration: m for m in rows if m.query == "q01"}
     assert q01["interpreted_unoptimized"].rows_out == 10                # LIMIT 10
     assert q01["interpreted_unoptimized"].rows_scanned == 100           # tiny customer
-    assert runner.summary(rows).splitlines()[-1].startswith("| geomean")
+    md = runner.summary(rows).splitlines()
+    assert any(line.startswith("| geomean") for line in md)
+    # the binder's plan for q01 is Limit <- Sort <- Project <- Filter <- Scan: one chain fuses
+    assert q01["compiled_unoptimized"].fused_pipelines == 1
+    assert q01["compiled_unoptimized_unfused"].fused_pipelines == 0
+    assert q01["interpreted_unoptimized"].fused_pipelines is None
+
+
+def test_interleaved_timing_runs_every_callable_each_round():
+    calls = []
+    fns = {k: (lambda k=k: calls.append(k) or k) for k in "abc"}
+    medians, first, calls_per = runner.time_interleaved(fns, runs=3, warmup=1, min_block_s=0)
+    assert calls == list("abc") + list("abc") * 3
+    assert first == {"a": "a", "b": "b", "c": "c"} and set(medians) == set("abc")
 
 
 def test_csv_is_readable_by_person_a_report(tiny_rows, tmp_path):
@@ -143,3 +156,13 @@ def test_cells_scanned_counts_pruned_columns_and_pushed_predicate_columns():
     assert runner.cells_scanned(plain, TABLES, CATALOG) == 6 * 5
     assert runner.cells_scanned(pruned, TABLES, CATALOG) == 6 * 3   # id, qty, amount
     assert runner.rows_scanned(pruned, TABLES) == 6
+
+
+def test_csv_round_trip_and_markdown_report(tiny_rows, tmp_path):
+    path = runner.write_csv(tiny_rows, tmp_path / "r.csv")
+    assert runner.read_csv(path) == tiny_rows
+    md = runner.write_markdown(runner.read_csv(path), tmp_path / "r.md").read_text(encoding="utf-8")
+    assert "every answer matches the reference interpreter: yes" in md
+    assert "| geomean" in md and "python:" in md
+    assert runner.main(["--summarize", str(path)]) == 0
+    assert (tmp_path / "r.md").exists()
