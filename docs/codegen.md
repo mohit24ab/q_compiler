@@ -250,3 +250,111 @@ unfused. `tests/test_codegen_fusion.py` asserts fused stays under 60% of unfused
 * LIKE runs after the vectorised predicates, only on survivors; the in-place update
   never writes into an input table.
 * Fused peak memory is lower, and fused LIKE is no slower than unfused.
+
+## Benchmark runner (Phase C6)
+
+```bash
+python -m bench.runner --scale bench            # 20 golden queries, ~20 minutes
+python -m bench.runner --scale tiny --queries q01 q07 --runs 3
+python -m bench.runner --summarize bench/results/runner_bench.csv
+```
+
+Every golden query (`tests/fixtures/queries/`, data from `bench/data/generate.py`) runs
+under six configurations:
+
+| configuration | plan | engine |
+|---|---|---|
+| `interpreted_unoptimized` | as bound | `runtime.interpret` (the naive baseline) |
+| `interpreted_optimized` | `optimizer.optimize` | `runtime.interpret` |
+| `compiled_unoptimized` | as bound | generated code, fusion on |
+| `compiled_optimized` | `optimizer.optimize` | generated code, fusion on |
+| `compiled_unoptimized_unfused` | as bound | generated code, fusion off |
+| `compiled_optimized_unfused` | `optimizer.optimize` | generated code, fusion off |
+
+The first four are the 2x2 from the brief. It separates the optimizer's contribution
+(rows 1 vs 2, 3 vs 4) from compilation's (2 vs 4). The last two isolate fusion (C5).
+
+How it measures, and why:
+
+* **Correctness first.** Every configuration's answer is compared with
+  `interpret(unoptimized plan)`. A wrong answer is still timed but flagged
+  (`matches_reference`), and the runner exits 1.
+* **Execution only.** Binding, optimizing and code generation happen once, before timing,
+  as for a prepared statement. `compile_ms` reports generate() + compile() separately.
+  Input tables are converted from Arrow once, up front, so no configuration pays for that.
+* **Blocks, taking turns.** A sample is a block of back-to-back calls lasting at least
+  50 ms (one call for anything slower), with the garbage collector off, as `timeit` does.
+  Each round times one block of every configuration in turn, and the result is the
+  median of 5 rounds after a warm-up. Both choices came from measuring the measurement:
+  timing configurations one after another put a slow stretch of the laptop on one of
+  them (identical code measured 27.0 and 17.8 ms), and timing single calls in turn put
+  an interpreted run's garbage inside the next short compiled call (0.19 ms measured
+  as 1.6 ms).
+* **Memory apart.** `peak_memory_kb` is the `tracemalloc` peak of one extra, untimed call,
+  because tracing slows everything down. numpy reports its buffers to tracemalloc.
+* `rows_scanned` uses Person A's definition (base rows read by Scans). `cells_scanned`
+  is rows x columns read, so column pruning shows up. `fused_pipelines` counts the
+  chains fusion fused. Where it is 0, fused and unfused are the same code, and the
+  summary leaves that ratio blank instead of reporting noise.
+
+The CSV starts with Person A's columns (`bench/report.py: CSV_COLUMNS`), so
+`bench.report.generate_charts("bench/results/runner_bench.csv")` draws it unchanged. A
+Markdown summary is written next to it.
+
+Two things the runner needed from outside codegen, both temporary:
+
+* `bench/aliases.py`. The binder emits alias qualifiers (`o.cust_id`) under
+  `Scan[orders]`, which nothing downstream can resolve. That affects 10 of the 20
+  queries. `resolve_aliases` maps each alias to the one scanned table whose schema has
+  every column used with it, and refuses to guess otherwise. It is a no-op once the
+  binder emits table names.
+* The interpreter's joins. The C1 interpreter tried every left x right pair, which is
+  2.5 billion pairs for lineitem x orders at bench scale. Equality conjuncts now build a
+  hash index that only supplies candidate rows. The full condition is still evaluated
+  on every candidate, and output order is unchanged (tests compare it with the all-pairs
+  loop row for row). Without this, "interpreted vs compiled" would have measured
+  nested loops against hash joins rather than interpretation against compilation.
+
+### Results at bench scale
+
+100,000 lineitem / 25,000 orders / 5,000 customer and part rows, with Person B's optimizer
+(`b/phase-7-ablation`, not on main yet). All 120 measurements give the reference answer.
+Full table: [`bench/results/runner_bench.md`](../bench/results/runner_bench.md); raw
+numbers: `bench/results/runner_bench.csv`.
+
+| speedup (geometric mean over 20 queries) | |
+|---|---|
+| optimizer, interpreted (`interpreted_unoptimized` / `interpreted_optimized`) | **1.9x** |
+| optimizer, compiled (`compiled_unoptimized` / `compiled_optimized`) | **1.8x** |
+| compilation (`interpreted_optimized` / `compiled_optimized`) | **42.7x** |
+| fusion, unoptimized plans (the 7 queries where a chain fused) | **1.14x** |
+| fusion, optimized plans (the 2 queries where a chain fused) | **1.03x** |
+| total (`interpreted_unoptimized` / `compiled_optimized`) | **82.4x** |
+
+What the numbers say:
+
+* **Compilation is the big lever:** 8x to 304x. It is largest on single-table scans and
+  filters (q03-q06: 229-304x), where the interpreter evaluates each expression row by
+  row and the generated code makes one numpy call per operator. It is smallest where the
+  generated code still loops in Python: building and probing the join hash table and
+  assigning group ids (q13-q16, q19: 8-18x). Those loops are the next thing to
+  vectorise (e.g. grouping with `np.unique`, a sort-merge join with `np.searchsorted`).
+  Even counting the one-off generate + compile (0.6-12.8 ms), a query's first run is at
+  least 7.2x faster than the interpreter.
+* **The optimizer matters for joins:** 2.8-15x on q07-q12 and q19-q20, where predicates
+  pushed below the joins shrink both join inputs. It gives at most 1.35x on single-table
+  queries, where the scan already is the whole query. It contributes about the same
+  factor to both engines, so its gain and compilation's multiply.
+* **Fusion and the optimizer remove the same intermediates.** On bound plans fusion is
+  worth up to 1.52x (q02) and 1.34x (q05). After B's pushdown, pruning and folding,
+  almost every `Project <- Filter <- Scan` chain has become a single pushed, pruned
+  Scan, which already is one pass. Only 2 optimized plans still contain a fusable chain,
+  and there it is worth 1.03x. Fusion pays when the optimizer can't simplify the plan
+  (or isn't run).
+* **Memory follows the data touched.** Peak memory falls from 0.8-93 MB (naive) to
+  0.1-18 MB (compiled, optimized). Pruning cuts cells scanned by 17-70%, which is most
+  visible in compiled joins (q10: 61 MB unoptimized, 5.8 MB optimized).
+* **Noise.** On the largest joins, repeated runs on this laptop vary by up to about 30%:
+  q11 fuses nothing, so its fused and unfused code is identical, yet it measured 342 and
+  259 ms. Treat differences under about 1.3x on those queries as noise. The ratios above
+  2x are stable across the three full runs made while building the runner.
