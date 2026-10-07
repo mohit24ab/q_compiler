@@ -1,9 +1,14 @@
 """Per-operator code emission. Each method emits numpy code and returns a `Rel` that
 says which variables now hold each output column.
 
-Scan, Filter, Project (Phase C3); Join, Aggregate, Sort, Limit (Phase C4).
+Scan, Filter, Project (Phase C3); Join, Aggregate, Sort, Limit (Phase C4);
+operator fusion of [Project] <- Filter* <- Scan chains (Phase C5, see docs/codegen.md).
 """
 from __future__ import annotations
+
+import ast
+import io
+import tokenize
 
 from codegen.emitter import Emitter
 from codegen.exprgen import (
@@ -34,16 +39,71 @@ def mask_src(gen, code, n: str) -> str:
     return f"np.full({n}, {m}, dtype=bool)" if gen.is_scalar(m) else m
 
 
+def fusable_chain(node):
+    """`(project, filters, scan)` when `node` heads a chain that fuses into one pass.
+
+    The chain is  [Project] <- Filter* <- Scan  with at least two operators in it; a
+    Scan's pushed predicate is folded in as one more filter. `filters` is top-down.
+    Anything else (a Filter above a Project, a Project above a Project, a chain that
+    starts at a Join or Aggregate) compiles operator by operator.
+    """
+    project = node if node_kind(node) == "Project" else None
+    cur = node.child if project is not None else node
+    filters = []
+    while node_kind(cur) == "Filter":
+        filters.append(cur)
+        cur = cur.child
+    if node_kind(cur) != "Scan" or (project is None and not filters):
+        return None
+    return project, filters, cur
+
+
+def row_at_a_time(expr) -> bool:
+    """True when `expr` compiles to a Python loop over the rows (LIKE) rather than to
+    whole-array numpy operations, i.e. when it is worth running on fewer rows."""
+    kind = node_kind(expr)
+    if kind == "BinaryOp":
+        return (_norm(expr.op) in ("LIKE", "NOT LIKE")
+                or row_at_a_time(expr.left) or row_at_a_time(expr.right))
+    if kind == "UnaryOp":
+        return row_at_a_time(expr.operand)
+    return False
+
+
+def _atom(src: str) -> str:
+    """`src`, parenthesised unless it already binds tighter than `&`: a name, a call,
+    or an expression wrapped in one outer pair of parentheses."""
+    body = ast.parse(src, mode="eval").body
+    if isinstance(body, (ast.Name, ast.Call, ast.Attribute, ast.Subscript, ast.Constant)):
+        return src
+    if src.startswith("(") and src.endswith(")"):
+        parens = [t.string for t in tokenize.generate_tokens(io.StringIO(src).readline)
+                  if t.type == tokenize.OP and t.string in "()"]
+        depth = 0
+        for i, p in enumerate(parens):
+            depth += 1 if p == "(" else -1
+            if depth == 0:
+                if i == len(parens) - 1:  # the first "(" closes at the very end
+                    return src
+                break
+    return f"({src})"
+
+
 class PlanCompiler:
-    def __init__(self, em, catalog):
+    def __init__(self, em, catalog, fuse: bool = False):
         self.em = em
         self.catalog = catalog
+        self.fuse = fuse
 
     def compile(self, node) -> Rel:
         kind = node_kind(node)
         method = getattr(self, f"_{kind.lower()}", None)
         if method is None or kind not in COMPILED_KINDS:
             raise CodegenError(f"{kind} is not compiled yet")
+        if self.fuse:
+            chain = fusable_chain(node)
+            if chain is not None:
+                return self._fused(node, *chain)
         return method(node)
 
     def _empty(self, columns, why: str, expr_columns=None) -> Rel:
@@ -178,12 +238,15 @@ class PlanCompiler:
     def _project(self, node) -> Rel:
         rel = self.compile(node.child)
         self._section(node)
-        gen = ExprGen(self.em, rel)
+        return self._project_exprs(node, rel, ExprGen(self.em, rel))
+
+    def _project_exprs(self, node, rel: Rel, gen: ExprGen) -> Rel:
         out = []
         for expr, alias in node.exprs:
             dtype = gen.dtype(expr)
             if node_kind(expr) == "ColumnRef":
                 # A plain column costs nothing: reuse its arrays under the new name.
+                gen.gen(expr)  # loads it, if it is still lazy
                 col = rel.columns[gen.scope.index_of(expr)]
                 qualifier = col.table if expr.name == alias else None
                 out.append(CVar(alias, col.dtype, qualifier, col.v, col.ok))
@@ -193,6 +256,131 @@ class PlanCompiler:
             self.em.line(f"{v} = {full_src(code.v, rel.n, dtype) if code.scalar else code.v}")
             out.append(CVar(alias, dtype, None, v, self._bind_ok(gen, v, code.ok, rel.n)))
         return Rel(out, rel.n)
+
+    # ------------------------------------------------------------------ fused pipeline
+    def _fused(self, node, project, filters, scan) -> Rel:
+        """[Project] <- Filter* <- Scan as one pass over the table.
+
+        Unfused, each operator materialises its whole output: the Scan reads every
+        column, each Filter gathers every column it was given, the Project computes
+        from that. Fused:
+          1. read only the columns some predicate needs, full length;
+          2. AND every predicate (the pushed one and each Filter's) into ONE mask;
+             a predicate that loops over rows in Python (LIKE) goes last and runs
+             only on the rows the vectorized predicates let through;
+          3. apply that mask once, and only to the columns the output needs:
+             predicate columns are gathered, every other column is read straight
+             from the table with rows=mask, so no unfiltered copy of it ever exists;
+          4. compute the Project's expressions over those filtered columns.
+        The predicates all see every row (not just the survivors of the one below),
+        which is the same answer: a row passes stacked WHEREs iff it passes their AND.
+        """
+        schema = self._table_schema(scan)
+        full = Rel([CVar(name, dtype, scan.table) for name, dtype in schema], n="")
+        by_name = {c.name: c for c in full.columns}
+        wanted = scan.columns if scan.columns is not None else [c.name for c in full.columns]
+        missing = [w for w in wanted if w not in by_name]
+        if missing:
+            raise CodegenError(f"Scan[{scan.table}] asks for unknown columns {missing}")
+        visible = Rel([by_name[w] for w in wanted], n="")  # what the Filters/Project see
+
+        predicates = [(f"pushed into Scan[{scan.table}]", scan.pushed_predicate, full)] \
+            if scan.pushed_predicate is not None else []
+        predicates += [("Filter", f.predicate, visible) for f in reversed(filters)]
+        steps = len(filters) + 1 + (project is not None)
+
+        self.em.blank()
+        self.em.comment(f"Fused pipeline: {steps} operators, one pass over {scan.table}")
+        for line in format_plan(node).splitlines():
+            self.em.comment(f"  {line}")
+        if any(never_true(p) for _, p, _ in predicates):
+            layout = self._layout_of(node)
+            return self._empty(layout.columns, "a predicate in the chain is constant FALSE/NULL: "
+                                               "the table is never read", layout.expr_columns)
+
+        src = self.em.fresh(scan.table)
+        self.em.line(f"{src} = as_table(tables[{scan.table!r}])")
+        full.n = visible.n = f"{src}.num_rows"
+
+        def load_full(col: CVar):
+            v = self.em.fresh(col.name)
+            self.em.reserve(f"{v}_ok")
+            self.em.line(f"{v}, {v}_ok = read_column({src}, {col.name!r})")
+            col.v, col.ok = v, f"{v}_ok"
+
+        keep = None
+        if predicates:
+            self.em.comment("every predicate, over just the columns it reads, ANDed into one mask")
+            vectorized = [p for p in predicates if not row_at_a_time(p[1])]
+            looped = [p for p in predicates if row_at_a_time(p[1])]
+            if not vectorized:  # nothing cheap to narrow the rows with first
+                vectorized, looped = looped[:1], looped[1:]
+            masks = []
+            for label, predicate, scope in vectorized:
+                self.em.comment(f"{label}: {render_expr(predicate)}")
+                gen = ExprGen(self.em, scope, load_full)
+                masks.append(mask_src(gen, gen.gen(predicate), full.n))
+            keep = self.em.fresh("keep")
+            combined = " & ".join(_atom(m) for m in masks)
+            if looped and combined.isidentifier():
+                combined += ".copy()"  # updated in place below: never write into a column
+            self.em.line(f"{keep} = {combined}")
+            for label, predicate, scope in looped:
+                self._narrow(keep, label, predicate, scope, src)
+            n = self.em.fresh("n")
+            self.em.line(f"{n} = int(np.count_nonzero({keep}))")
+        else:
+            n = full.n
+
+        kept = Rel([CVar(c.name, c.dtype, c.table) for c in visible.columns], n)
+
+        def load_kept(col: CVar):
+            source = visible.columns[next(i for i, c in enumerate(kept.columns) if c is col)]
+            v = self.em.fresh(col.name)
+            self.em.reserve(f"{v}_ok")
+            if source.v is None:  # no predicate read it: read only the rows that survive
+                rows = f", rows={keep}" if keep else ""
+                self.em.line(f"{v}, {v}_ok = read_column({src}, {col.name!r}{rows})")
+            else:                 # already read in full for a predicate: apply the mask
+                self.em.line(f"{v}, {v}_ok = {source.v}[{keep}], {source.ok}[{keep}]")
+            col.v, col.ok = v, f"{v}_ok"
+
+        gen = ExprGen(self.em, kept, load_kept)
+        needed = [kept.columns[gen.scope.index_of(ref)]
+                  for expr, _ in project.exprs for ref in column_refs(expr)] \
+            if project is not None else kept.columns
+        self.em.comment("apply the mask once, only to the columns the output needs"
+                        if keep else "read only the columns the output needs")
+        for col in needed:
+            if col.v is None:
+                load_kept(col)
+        if project is None:
+            return kept
+        if any(node_kind(e) != "ColumnRef" for e, _ in project.exprs):
+            self.em.comment("the projection" + (", over the filtered columns" if keep else ""))
+        return self._project_exprs(project, kept, gen)
+
+    def _narrow(self, keep: str, label: str, predicate, scope: Rel, src: str):
+        """AND a row-at-a-time predicate (LIKE) into `keep`, evaluating it only on the
+        rows `keep` still lets through, as the unfused Filter above them would."""
+        self.em.comment(f"{label}: {render_expr(predicate)}")
+        self.em.comment("  a Python loop per row: run it only on the rows still alive")
+        alive = self.em.fresh("alive")
+        self.em.line(f"{alive} = np.flatnonzero({keep})")
+        rows = Rel([CVar(c.name, c.dtype, c.table) for c in scope.columns], f"len({alive})")
+
+        def load_alive(col: CVar):
+            source = scope.columns[next(i for i, c in enumerate(rows.columns) if c is col)]
+            v = self.em.fresh(col.name)
+            self.em.reserve(f"{v}_ok")
+            if source.v is None:
+                self.em.line(f"{v}, {v}_ok = read_column({src}, {col.name!r}, rows={alive})")
+            else:
+                self.em.line(f"{v}, {v}_ok = {source.v}[{alive}], {source.ok}[{alive}]")
+            col.v, col.ok = v, f"{v}_ok"
+
+        gen = ExprGen(self.em, rows, load_alive)
+        self.em.line(f"{keep}[{alive}] = {mask_src(gen, gen.gen(predicate), rows.n)}")
 
     # ------------------------------------------------------------------ Join
     def _join(self, node) -> Rel:
@@ -209,7 +397,8 @@ class PlanCompiler:
         right = self.compile(node.right)
         self._section(node)
         li, ri = self.em.fresh("li"), self.em.fresh("ri")
-        keys, residual = ([], None) if never_true(node.condition) else             self._split_condition(node.condition, left, right)
+        keys, residual = (([], None) if never_true(node.condition)
+                          else self._split_condition(node.condition, left, right))
 
         if never_true(node.condition):        # LEFT join that can never match
             self.em.comment("condition is constant FALSE/NULL: every left row is unmatched")

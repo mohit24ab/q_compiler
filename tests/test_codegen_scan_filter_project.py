@@ -83,9 +83,13 @@ def test_pushed_predicate_reads_predicate_columns_first_then_masks_the_rest():
 def test_filter_builds_one_mask_and_applies_it_to_every_column():
     plan = Filter(child=scan("sales", columns=["id", "qty", "amount"]),
                   predicate=op(">", col("qty"), lit(2)))
-    src = compiled(plan)
+    src = generate(plan, CATALOG, mode="compiled", fuse=False)  # operator at a time
     assert src.count("keep_1 =") == 1
     assert src.count("[keep_1]") == 6  # 3 columns x (values, ok)
+    # fused (Phase C5): qty is read in full for the mask; id and amount are read already filtered
+    fused = compiled(plan)
+    assert fused.count("keep_1 =") == 1 and fused.count("[keep_1]") == 2
+    assert fused.count("rows=keep_1") == 2
 
 
 def test_project_of_plain_column_copies_nothing():

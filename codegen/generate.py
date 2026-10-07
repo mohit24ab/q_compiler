@@ -12,7 +12,10 @@ Every generated module has the same outer shape:
 Two modes:
   * compiled     — real numpy code, one commented section per operator (codegen/operators.py).
                    Every plan node has a compiler (Phase C3: Scan, Filter, Project;
-                   Phase C4: Join, Aggregate, Sort, Limit).
+                   Phase C4: Join, Aggregate, Sort, Limit). With fuse=True (the default),
+                   [Project] <- Filter* <- Scan chains become one pass (Phase C5,
+                   docs/codegen.md); fuse=False keeps one section per operator, so the
+                   benchmark can measure what fusion alone is worth.
   * passthrough  — the body rebuilds the plan as constructor calls and hands it to the
                    reference interpreter. Only used when asked for with mode="passthrough",
                    e.g. to measure what compilation buys in the benchmarks.
@@ -32,11 +35,12 @@ from runtime.expr_eval import node_kind
 _PLAN_KINDS = {"Scan", "Filter", "Project", "Join", "Aggregate", "Sort", "Limit"}
 
 
-def generate(plan, catalog=None, mode: str = "auto") -> str:
+def generate(plan, catalog=None, mode: str = "auto", fuse: bool = True) -> str:
     """Python source text for a module whose `run(tables)` executes `plan`.
 
     mode: "auto" (compile when possible), "compiled" (error if not possible),
           or "passthrough" (always interpret).
+    fuse: fuse Scan/Filter/Project chains into single passes (compiled code only).
     """
     if mode not in ("auto", "compiled", "passthrough"):
         raise ValueError(f"unknown mode {mode!r}")
@@ -44,15 +48,15 @@ def generate(plan, catalog=None, mode: str = "auto") -> str:
         return _generate_passthrough(plan)
     if not compilable(plan):
         raise CodegenError("plan contains operators that are not compiled yet")
-    return _generate_compiled(plan, catalog)
+    return _generate_compiled(plan, catalog, fuse)
 
 
 _HELPERS = ("as_table", "read_column", "build_table", "like", "take_or_null")
 
 
-def _generate_compiled(plan, catalog) -> str:
+def _generate_compiled(plan, catalog, fuse: bool) -> str:
     em = Emitter()
-    compiler = PlanCompiler(em, catalog)
+    compiler = PlanCompiler(em, catalog, fuse=fuse)
     with em.block("def run(tables):"):
         rel = compiler.compile(plan)
         compiler.finish(rel)
@@ -62,7 +66,8 @@ def _generate_compiled(plan, catalog) -> str:
     em.import_("from runtime._compat import DType")
     used = [h for h in _HELPERS if f"{h}(" in body]
     em.import_(f"from runtime.vec import {', '.join(used)}")
-    return em.source(docstring=_header(plan, mode="compiled (numpy)"))
+    return em.source(docstring=_header(
+        plan, mode=f"compiled (numpy), operator fusion {'on' if fuse else 'off'}"))
 
 
 def _generate_passthrough(plan) -> str:
