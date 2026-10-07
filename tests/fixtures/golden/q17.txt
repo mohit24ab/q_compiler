@@ -1,0 +1,5 @@
+Project[lineitem.ship_date AS ship_date, daily_revenue, daily_shipments]
+  Filter[count(*) > 2]
+    Aggregate[group=lineitem.ship_date, aggs=sum(lineitem.extended_price) AS daily_revenue, count(*) AS daily_shipments]
+      Filter[lineitem.return_flag = 'N']
+        Scan[lineitem]
