@@ -10,11 +10,12 @@ be read off too, on plans the optimizer has and hasn't already pruned:
 compiled_unoptimized_unfused and compiled_optimized_unfused.
 
 What is measured, per query and configuration:
-  runtime_ms       median wall-clock time of `--runs` timed runs, after `--warmup` discarded
-                   runs. Execution only: SQL binding, optimizing and code generation happen
-                   once, before timing, as they would for a prepared query. The
-                   configurations of a query are timed round-robin, one run each per round,
-                   so a slow patch of the machine hits them all alike.
+  runtime_ms       median, over `--runs` timed samples, of the time per call, after
+                   `--warmup` discarded calls. A sample is a block of back-to-back calls
+                   lasting at least 50 ms (one call for anything slower: `calls_per_run`),
+                   and the configurations of a query take turns, one block each per round
+                   (see time_interleaved for why). Execution only: SQL binding, optimizing
+                   and code generation happen once, before timing, as for a prepared query.
   compile_ms       for compiled configurations, generate() + Python's compile(), measured once.
   peak_memory_kb   tracemalloc peak during one extra run, kept apart from the timed runs
                    because tracing slows everything down (numpy reports its allocations).
@@ -42,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import math
 import platform
 import statistics
@@ -84,6 +86,7 @@ class Measurement:
     cells_scanned: int
     rows_out: int
     runs: int
+    calls_per_run: int            # back-to-back calls timed as one sample
     matches_reference: bool
     fused_pipelines: int | None   # compiled only: "# Fused pipeline" sections in the source
     optimizer: str
@@ -170,28 +173,47 @@ def _peak_kb(fn) -> float:
         tracemalloc.stop()
 
 
-def time_interleaved(fns: dict, runs: int, warmup: int) -> tuple[dict, dict]:
-    """({key: median ms}, {key: first result}) for zero-argument callables.
+def time_interleaved(fns: dict, runs: int, warmup: int, min_block_s: float = 0.05):
+    """({key: median ms per call}, {key: first result}, {key: calls per sample}).
 
-    Warm-ups first, then `runs` rounds that each time every callable once, in turn.
-    Interleaving means a slow stretch of the machine (another process, thermal or
-    power throttling) lands on every configuration alike instead of on whichever
-    happened to be running; one configuration after another measured the very same
-    code at both 4.7 and 8.3 ms on a laptop.
+    `warmup` untimed calls of each callable first (at least one: its time sizes the
+    blocks, its result is the one checked). Then `runs` rounds; each round times one
+    block of every callable, in turn. A block is as many back-to-back calls as fill
+    `min_block_s` (one call for anything slower), and its time / calls is one sample.
+
+    Why blocks, and why round-robin. Timing one call of each configuration in turn put
+    a 0.25 ms compiled query right after a seconds-long interpreted one, whose garbage
+    and cache traffic then landed inside the short call (1.6 ms measured); collecting
+    garbage before each call instead left the caches cold. Blocks spread any such
+    one-off cost over many calls, as `timeit` does. Rounds still alternate between
+    configurations, so a slow stretch of the machine (another process, throttling)
+    lands on all of them alike: timing one configuration's runs back to back measured
+    the very same code at 27.0 and 17.8 ms. The garbage collector is off inside a block.
     """
-    first = {}
+    first, per_call = {}, {}
     for key, fn in fns.items():
-        for _ in range(warmup):
+        for _ in range(max(1, warmup)):
+            t0 = time.perf_counter()
             out = fn()
+            per_call[key] = time.perf_counter() - t0
             first.setdefault(key, out)
+    calls = {k: max(1, math.ceil(min_block_s / max(t, 1e-9))) if min_block_s else 1
+             for k, t in per_call.items()}
     timings = {key: [] for key in fns}
     for _ in range(max(1, runs)):
         for key, fn in fns.items():
-            t0 = time.perf_counter()
-            out = fn()
-            timings[key].append(time.perf_counter() - t0)
-            first.setdefault(key, out)
-    return {k: statistics.median(v) * 1000.0 for k, v in timings.items()}, first
+            n = calls[key]
+            gc.disable()
+            try:
+                t0 = time.perf_counter()
+                for _ in range(n):
+                    fn()
+                elapsed = (time.perf_counter() - t0) / n
+            finally:
+                gc.enable()
+            timings[key].append(elapsed)
+    medians = {k: statistics.median(v) * 1000.0 for k, v in timings.items()}
+    return medians, first, calls
 
 
 def measure_query(name, sql, catalog, tables, optimize, optimizer_label, scale,
@@ -213,7 +235,7 @@ def measure_query(name, sql, catalog, tables, optimize, optimizer_label, scale,
             compile_ms[config] = round((time.perf_counter() - t0) * 1000.0, 3)
             pipelines[config] = source.count("# Fused pipeline")
             fns[config] = lambda run=run: run(tables)
-    medians, results = time_interleaved(fns, runs, warmup)
+    medians, results, calls = time_interleaved(fns, runs, warmup)
     out = []
     for config in configs:
         ok, _ = compare_tables(reference, results[config], ordered=is_ordered(sql))
@@ -222,7 +244,8 @@ def measure_query(name, sql, catalog, tables, optimize, optimizer_label, scale,
             query=name, configuration=config, runtime_ms=round(medians[config], 3),
             rows_scanned=rows_scanned(p, tables), peak_memory_kb=round(_peak_kb(fns[config]), 2),
             compile_ms=compile_ms[config], cells_scanned=cells_scanned(p, tables, catalog),
-            rows_out=results[config].num_rows, runs=max(1, runs), matches_reference=ok,
+            rows_out=results[config].num_rows, runs=max(1, runs), calls_per_run=calls[config],
+            matches_reference=ok,
             fused_pipelines=pipelines[config],
             optimizer=optimizer_label if CONFIGURATIONS[config][1] else "none", scale=scale))
     return out

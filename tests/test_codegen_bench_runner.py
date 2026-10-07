@@ -101,7 +101,7 @@ def test_runner_measures_every_configuration_and_every_answer_is_right(tiny_rows
 def test_interleaved_timing_runs_every_callable_each_round():
     calls = []
     fns = {k: (lambda k=k: calls.append(k) or k) for k in "abc"}
-    medians, first = runner.time_interleaved(fns, runs=3, warmup=1)
+    medians, first, calls_per = runner.time_interleaved(fns, runs=3, warmup=1, min_block_s=0)
     assert calls == list("abc") + list("abc") * 3
     assert first == {"a": "a", "b": "b", "c": "c"} and set(medians) == set("abc")
 
