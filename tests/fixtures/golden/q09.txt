@@ -1,0 +1,7 @@
+Limit[n=20]
+  Sort[keys=l.ship_date ASC]
+    Project[l.id AS lineitem_id, o.id AS order_id, o.order_date AS order_date, l.ship_date AS ship_date, l.extended_price AS extended_price]
+      Filter[o.order_status = 'O' AND l.ship_date > o.order_date]
+        Join[kind=inner, cond=l.order_id = o.id]
+          Scan[lineitem]
+          Scan[orders]
