@@ -156,3 +156,13 @@ def test_cells_scanned_counts_pruned_columns_and_pushed_predicate_columns():
     assert runner.cells_scanned(plain, TABLES, CATALOG) == 6 * 5
     assert runner.cells_scanned(pruned, TABLES, CATALOG) == 6 * 3   # id, qty, amount
     assert runner.rows_scanned(pruned, TABLES) == 6
+
+
+def test_csv_round_trip_and_markdown_report(tiny_rows, tmp_path):
+    path = runner.write_csv(tiny_rows, tmp_path / "r.csv")
+    assert runner.read_csv(path) == tiny_rows
+    md = runner.write_markdown(runner.read_csv(path), tmp_path / "r.md").read_text(encoding="utf-8")
+    assert "every answer matches the reference interpreter: yes" in md
+    assert "| geomean" in md and "python:" in md
+    assert runner.main(["--summarize", str(path)]) == 0
+    assert (tmp_path / "r.md").exists()

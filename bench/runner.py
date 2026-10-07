@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import platform
 import statistics
 import sys
 import time
@@ -299,6 +300,60 @@ def summary(results: list[Measurement]) -> str:
     return "\n".join(lines)
 
 
+def read_csv(path) -> list[Measurement]:
+    """The rows write_csv wrote, with their types back."""
+    def parse(name, value):
+        if value == "" and name in ("compile_ms", "fused_pipelines"):
+            return None
+        kind = Measurement.__dataclass_fields__[name].type
+        if "bool" in kind:
+            return value == "True"
+        if "int" in kind:
+            return int(value)
+        if "float" in kind:
+            return float(value)
+        return value
+    with Path(path).open(encoding="utf-8") as f:
+        return [Measurement(**{k: parse(k, v) for k, v in row.items()}) for row in csv.DictReader(f)]
+
+
+def environment() -> dict[str, str]:
+    import numpy
+    return {"python": platform.python_version(), "numpy": numpy.__version__,
+            "platform": platform.platform(), "processor": platform.processor() or "unknown"}
+
+
+def write_markdown(results: list[Measurement], path, env: dict | None = None) -> Path:
+    """The summary as a small report: where it was measured, then the table."""
+    path = Path(path)
+    first = results[0]
+    env = env or environment()
+    optimizers = sorted({m.optimizer for m in results} - {"none"})
+    lines = [
+        f"# Benchmark results: scale `{first.scale}`",
+        "",
+        f"Produced by `python -m bench.runner --scale {first.scale}`; raw numbers in "
+        f"`{path.with_suffix('.csv').name}`. Median of {first.runs} timed runs per configuration "
+        f"(after a warm-up), configurations interleaved round-robin. Times are execution "
+        f"only: binding, optimizing and code generation happen once, beforehand.",
+        "",
+        f"* optimizer: {', '.join(optimizers) or 'none'}",
+        *[f"* {k}: {v}" for k, v in env.items()],
+        f"* every answer matches the reference interpreter: "
+        f"{'yes' if all(m.matches_reference for m in results) else 'NO'}",
+        "",
+        "Ratios are speedups (higher is better). `optimizer` compares unoptimized with "
+        "optimized plans on the same engine, `compilation` compares the interpreter with "
+        "generated code on the optimized plan, `fusion` compares generated code with fusion "
+        "off and on, `total` compares the naive baseline with the full pipeline.",
+        "",
+        summary(results),
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--scale", default="tiny", choices=["tiny", "bench"])
@@ -307,8 +362,14 @@ def main(argv=None) -> int:
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--warmup", type=int, default=1)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out", help="CSV path (default: bench/results/runner_<scale>.csv)")
+    ap.add_argument("--out", help="CSV path (default: bench/results/runner_<scale>.csv); "
+                                  "a .md summary is written next to it")
+    ap.add_argument("--summarize", metavar="CSV", help="only rewrite the .md summary of a CSV")
     args = ap.parse_args(argv)
+    if args.summarize:
+        md = write_markdown(read_csv(args.summarize), Path(args.summarize).with_suffix(".md"))
+        print(md.read_text(encoding="utf-8"))
+        return 0
 
     def progress(name, rows):
         times = "  ".join(f"{m.configuration}={m.runtime_ms:.1f}ms" + ("" if m.matches_reference else "(WRONG)")
@@ -320,7 +381,8 @@ def main(argv=None) -> int:
     results = run_suite(args.scale, args.queries, args.configs, args.runs, args.warmup,
                         args.seed, progress)
     out = write_csv(results, args.out or ROOT / "bench" / "results" / f"runner_{args.scale}.csv")
-    print(f"\nwrote {len(results)} rows to {out}\n")
+    md = write_markdown(results, out.with_suffix(".md"))
+    print(f"\nwrote {len(results)} rows to {out}, summary in {md}\n")
     print(summary(results))
     wrong = [f"{m.query}/{m.configuration}" for m in results if not m.matches_reference]
     if wrong:
