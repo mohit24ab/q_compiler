@@ -256,17 +256,55 @@ def naive_interpret(plan: PlanNode, tables: dict[str, Any]) -> tuple[list[str], 
             r_fields, r_rows = run_rel(node.right)
             out_fields = l_fields + r_fields
 
+            # Fast equi-join hash table index if condition is equality
+            is_equi = False
+            r_index: dict[Any, list[dict[str, Any]]] = {}
+            eq_probe = None
+            if isinstance(node.condition, BinaryOp) and node.condition.op.strip().upper() in ("=", "==") and r_rows and l_rows:
+                try:
+                    _ = _eval_expr(node.condition.right, r_rows[0])
+                    _ = _eval_expr(node.condition.left, l_rows[0])
+                    for r_r in r_rows:
+                        k = _eval_expr(node.condition.right, r_r)
+                        r_index.setdefault(k, []).append(r_r)
+                    eq_probe = node.condition.left
+                    is_equi = True
+                except Exception:
+                    try:
+                        _ = _eval_expr(node.condition.left, r_rows[0])
+                        _ = _eval_expr(node.condition.right, l_rows[0])
+                        for r_r in r_rows:
+                            k = _eval_expr(node.condition.left, r_r)
+                            r_index.setdefault(k, []).append(r_r)
+                        eq_probe = node.condition.right
+                        is_equi = True
+                    except Exception:
+                        pass
+
             out_rows = []
-            for l_r in l_rows:
-                matched = False
-                for r_r in r_rows:
-                    combined = {**l_r, **r_r}
-                    if node.condition is None or _eval_expr(node.condition, combined):
-                        out_rows.append(combined)
-                        matched = True
-                if node.kind == "left" and not matched:
-                    null_r = {k: None for k in r_rows[0]} if r_rows else {}
-                    out_rows.append({**l_r, **null_r})
+            if is_equi and eq_probe is not None:
+                null_r = {k: None for k in r_rows[0]} if r_rows else {}
+                for l_r in l_rows:
+                    try:
+                        k = _eval_expr(eq_probe, l_r)
+                        matches = r_index.get(k, [])
+                    except Exception:
+                        matches = []
+                    for r_r in matches:
+                        out_rows.append({**l_r, **r_r})
+                    if node.kind == "left" and not matches:
+                        out_rows.append({**l_r, **null_r})
+            else:
+                for l_r in l_rows:
+                    matched = False
+                    for r_r in r_rows:
+                        combined = {**l_r, **r_r}
+                        if node.condition is None or _eval_expr(node.condition, combined):
+                            out_rows.append(combined)
+                            matched = True
+                    if node.kind == "left" and not matched:
+                        null_r = {k: None for k in r_rows[0]} if r_rows else {}
+                        out_rows.append({**l_r, **null_r})
             return out_fields, out_rows
 
         if isinstance(node, Aggregate):
