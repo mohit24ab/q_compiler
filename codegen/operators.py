@@ -238,6 +238,8 @@ class PlanCompiler:
     def _project(self, node) -> Rel:
         rel = self.compile(node.child)
         self._section(node)
+        if all(node_kind(e) == "ColumnRef" for e, _ in node.exprs):
+            self.em.comment("column references only: the arrays are reused, nothing to compute")
         return self._project_exprs(node, rel, ExprGen(self.em, rel))
 
     def _project_exprs(self, node, rel: Rel, gen: ExprGen) -> Rel:

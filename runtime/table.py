@@ -235,8 +235,11 @@ class Table:
     # ---------------------------------------------------------------- display
     def format(self, max_rows: int = 20) -> str:
         names = self.qualified_names()
-        rows = [["NULL" if v is None else str(v) for v in r]
-                for r in self.to_rows()[:max_rows]]
+        def cell(v):
+            if v is None:
+                return "NULL"
+            return format(v, ".10g") if isinstance(v, float) else str(v)  # no 0.1+0.2 noise
+        rows = [[cell(v) for v in r] for r in self.to_rows()[:max_rows]]
         widths = [max([len(n)] + [len(r[i]) for r in rows]) for i, n in enumerate(names)]
         line = lambda cells: " | ".join(c.ljust(w) for c, w in zip(cells, widths))
         out = [line(names), "-+-".join("-" * w for w in widths)]
