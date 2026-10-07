@@ -304,8 +304,8 @@ Markdown summary is written next to it.
 Two things the runner needed from outside codegen, both temporary:
 
 * `bench/aliases.py`. The binder emits alias qualifiers (`o.cust_id`) under
-  `Scan[orders]`, which nothing downstream can resolve. That affects 10 of the 20
-  queries. `resolve_aliases` maps each alias to the one scanned table whose schema has
+  `Scan[orders]`, which nothing downstream can resolve. That affects 9 of the 20
+  queries (every join). `resolve_aliases` maps each alias to the one scanned table whose schema has
   every column used with it, and refuses to guess otherwise. It is a no-op once the
   binder emits table names.
 * The interpreter's joins. The C1 interpreter tried every left x right pair, which is

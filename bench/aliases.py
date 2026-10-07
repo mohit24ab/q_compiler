@@ -4,8 +4,8 @@ For `FROM orders o JOIN customer c ON o.cust_id = c.id`, the binder (frontend/bi
 currently emits `ColumnRef(table="o", name="cust_id")` under a `Scan(table="orders")`.
 The IR has no alias field on Scan, so nothing downstream can tell that `o` means
 `orders`: the interpreter and the generated code fail with "unknown column 'o.cust_id'",
-and an optimizer can't tell which join input a predicate belongs to. 10 of the 20 golden
-queries (every join) are affected.
+and an optimizer can't tell which join input a predicate belongs to. 9 of the 20 golden
+queries (every join: q07-q12, q18-q20) are affected.
 
 Until the binder emits table names, `resolve_aliases(plan, catalog)` works out each alias
 from the plan itself: an unknown qualifier `q` means the one scanned table whose schema
