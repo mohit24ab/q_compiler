@@ -31,7 +31,8 @@ def _infer_expr_dtype(expr: Expr, child_schema: list[tuple[str, DType]]) -> DTyp
         return DType.FLOAT
 
     if isinstance(expr, UnaryOp):
-        if expr.op.upper() == "NOT":
+        op_norm = " ".join(expr.op.strip().upper().replace("_", " ").split())
+        if op_norm in ("NOT", "IS NULL", "IS NOT NULL"):
             return DType.BOOL
         return _infer_expr_dtype(expr.operand, child_schema)
 
