@@ -204,15 +204,15 @@ def run_demo(sql: str, scale: str = "tiny", runs: int = 3, max_rows: int = 15,
                if ok else s.red(f"{s.bad} DIFFERENT from the reference interpreter: {why}"))
     p(f"\n  {verdict}" + s.dim(" (row order compared)" if ordered else " (as a multiset)"))
 
-    p.section("Timing", f"median of {runs} run{'s' if runs != 1 else ''} after a warm-up")
-    configs = [("naive: interpreted", lambda: interpret(plan, tables)),
-               ("interpreted + optimizer", lambda: interpret(optimized, tables)),
-               ("compiled", None),
-               ("compiled + optimizer", lambda: run(tables))]
+    p.section("Timing", f"median of {runs} round{'s' if runs != 1 else ''}, "
+                        f"configurations taking turns (bench.runner)")
     unopt_run = compile_module(generate(plan, catalog, mode="compiled"))["run"]
-    configs[2] = ("compiled", lambda: unopt_run(tables))
-    timed = [(label, runner._median_ms(fn, runs, 1)[0]) for label, fn in configs]
-    timing_table(p, timed)
+    configs = {"naive: interpreted": lambda: interpret(plan, tables),
+               "interpreted + optimizer": lambda: interpret(optimized, tables),
+               "compiled": lambda: unopt_run(tables),
+               "compiled + optimizer": lambda: run(tables)}
+    medians, _, _ = runner.time_interleaved(configs, runs, warmup=1)
+    timing_table(p, list(medians.items()))
     p(s.dim(f"  code generation happens once per query: {codegen_ms:.1f} ms"))
     if scale == "tiny":
         p(s.dim("  (tiny data: these are fractions of a millisecond; --scale bench shows the real gap)"))
