@@ -18,34 +18,35 @@ or compilation (`docs/ablation/codegen.md`).
 
 | configuration | total runtime | slower than all passes | values read from tables | wrong results |
 |---|--:|--:|--:|--:|
-| all passes | 3,664.8 ms | — | 59,850,000 | 0 |
-| without predicate pushdown | 12,804.6 ms | 3.49x | 59,850,000 | 0 |
-| without join reordering | 3,958.8 ms | 1.08x | 59,850,000 | 0 |
-| without column pruning | 4,519.0 ms | 1.23x | 129,150,000 | 0 |
-| without constant folding | 3,780.5 ms | 1.03x | 59,850,000 | 0 |
-| no passes | 16,423.5 ms | 4.48x | 129,150,000 | 0 |
+| all passes | 4,113.3 ms | — | 59,850,000 | 0 |
+| without predicate pushdown | 14,289.7 ms | 3.47x | 59,850,000 | 0 |
+| without join reordering | 4,289.8 ms | 1.04x | 59,850,000 | 0 |
+| without column pruning | 5,078.7 ms | 1.23x | 129,150,000 | 0 |
+| without constant folding | 4,270.7 ms | 1.04x | 59,850,000 | 0 |
+| no passes | 16,322.0 ms | 3.97x | 129,150,000 | 0 |
 
-The optimizer makes the benchmark 4.5 times faster. Pushdown does most of it (up to 9.1x on
+The optimizer makes the benchmark 4.0 times faster. Pushdown does most of it (up to 9.4x on
 q12), and pruning halves the values read. The golden queries have no constant predicates and
 join at most three tables, written in a reasonable order, so folding and reordering have little
-to do there; the suite below exercises them.
+to do there; the suite below exercises them. Identical plans measured in two runs differ by up
+to about 1.2x on a single query, so per-query ratios below that are noise.
 
 **The optimizer's own differential suite** (69 queries, `tests/opt_query_suite.py`) on tables
 about 50 times the suite's size (2,000 orders, 4,000 lineitems, 200 customers, and so on):
 
 | configuration | total runtime | slower than all passes | without the comma join | values read from tables | wrong results |
 |---|--:|--:|--:|--:|--:|
-| all passes | 20.1 ms | — | — | 354,357 | 0 |
-| without predicate pushdown | 224.6 ms | 11.2x | 1.39x | 354,357 | 0 |
-| without join reordering | 28.3 ms | 1.4x | 1.32x | 354,357 | 0 |
-| without column pruning | 21.9 ms | 1.09x | 1.11x | 1,536,033 | 0 |
-| without constant folding | 19.8 ms | 0.98x | 1.00x | 392,957 | 0 |
-| no passes | 335.0 ms | 16.7x | 2.15x | 1,848,033 | 0 |
+| all passes | 20.2 ms | — | — | 354,357 | 0 |
+| without predicate pushdown | 188.4 ms | 9.3x | 1.32x | 354,357 | 0 |
+| without join reordering | 28.2 ms | 1.4x | 1.29x | 354,357 | 0 |
+| without column pruning | 22.0 ms | 1.09x | 1.08x | 1,536,033 | 0 |
+| without constant folding | 20.3 ms | 1.00x | 1.00x | 392,957 | 0 |
+| no passes | 320.5 ms | 15.9x | 2.07x | 1,848,033 | 0 |
 
 One query dominates the suite's totals. `comma_join_with_a_cross_product` lists its tables in an
-order that makes a cross product, and the unoptimized plan runs it as one: it takes 88% of the
+order that makes a cross product, and the unoptimized plan runs it as one: it takes 87% of the
 unoptimized total. The "without the comma join" column is the same study over the other 68
-queries, where the passes make the suite 2.15 times faster.
+queries, where the passes make the suite 2.07 times faster.
 
 The raw numbers, one row per query and configuration, are in `docs/ablation/codegen.csv`, the
 file Person A's `bench/report.py` charts. Its format is fixed in `tests/opt_ablation_run.py`
@@ -137,9 +138,9 @@ codegen evaluates while reading.
 ```
 
 **Measured contribution.** The largest. On the golden queries, turning it off makes the
-benchmark 3.5 times slower, and q12, q10, q08 and q07 seven to nine times slower. On the suite it
-is 11.2 times, almost all of it in the comma join (216x: the WHERE clause stays above the cross
-product); over the other 68 queries it is worth 1.39x. Rows filtered at the scan never reach a
+benchmark 3.5 times slower, and q12, q10, q08, q20 and q07 five to nine times slower. On the
+suite it is 9.3 times, almost all of it in the comma join (330x: the WHERE clause stays above the
+cross product); over the other 68 queries it is worth 1.32x. Rows filtered at the scan never reach a
 join. It doesn't change how many values are read, because the scan reads every row of its
 columns anyway; it changes how much work follows the read.
 
@@ -153,7 +154,9 @@ leaves.
   to bushy trees) finds the cheapest tree under the cost model.
 * **More than 8 leaves:** a greedy heuristic repeatedly joins the pair with the smallest
   estimated output.
-* **Cross products:** considered only when the graph is disconnected.
+* **Cross products:** considered only when the graph forces one: when it is disconnected, or
+  when only a conjunct over three or more tables holds some of them together
+  (`c.id + o.id = l.order_id`), so no two of them can be joined on a condition.
 * **Placement:** every conjunct goes into the lowest join that sees all the tables it reads.
 
 **Preconditions.** A region is left alone when:
@@ -162,6 +165,9 @@ leaves.
 * a column reference matches more than one leaf, or none;
 * nothing above it names its outputs (no Project or Aggregate), so its column order is part of
   the query's result;
+* a Sort or Limit is above it. Reordering changes the order of the join's output rows: under a
+  Sort, the order of rows whose sort keys tie, and under a Limit, which rows are kept. Both are
+  legal SQL, but Contract §7 compares ORDER BY results row for row;
 * the best tree isn't at least 1% cheaper than the current one.
 
 A LEFT join is never part of a region: it is a leaf, reordered around but never through.
@@ -182,11 +188,12 @@ whose FROM order crosses orders with nation):
 -     Scan[customer]
 ```
 
-**Measured contribution.** 1.4x over the suite, and 1.32x without the comma join. On individual
-queries: the five-way join written fact-table-first runs 3.5x faster, the comma join 3.3x, the
-three-way join filtered on `nation` 2.0x, and the nine-way chain (planned greedily) 1.9x. On
-the golden queries it is worth 1.08x overall, and 1.9x on q10: they join at most three
-tables, mostly in a sensible order already.
+**Measured contribution.** 1.4x over the suite, and 1.29x without the comma join. On individual
+queries: the comma join runs 5.8x faster, the nine-way chain (planned greedily) 2.6x, the
+five-way join written fact-table-first 2.4x, and the three-way join filtered on `nation` 2.0x.
+On the golden queries it changes no plan. They join at most three tables, mostly in a sensible
+order already, and the one it used to improve, q10 (1.9x), ends in ORDER BY ... LIMIT, so its
+joins now stay as written (see the preconditions).
 
 **How it is checked.** On 40 random join graphs (chains, stars, cycles, cliques, random trees)
 the dynamic program's plan costs exactly as much as the cheapest of every possible tree. A
@@ -223,8 +230,8 @@ and a narrowing Project is inserted above a join whose output is wider than what
 ```
 
 **Measured contribution.** Without it, the golden queries read 2.2 times as many values (129
-million instead of 60 million) and run 1.23 times slower, up to 1.8x on q17. On the suite it
-reads 4.3 times as many values and runs 1.1 times slower.
+million instead of 60 million) and run 1.23 times slower, up to 1.8x on q17 and 1.7x on q20. On
+the suite it reads 4.3 times as many values and runs 1.1 times slower.
 
 ## Constant folding (`constant_folding.py`)
 
@@ -264,10 +271,10 @@ reads 4.3 times as many values and runs 1.1 times slower.
 ```
 
 **Measured contribution.** Small in total, because few queries have constants: within run-to-run
-noise on the suite, and 1.03x on the golden queries, which have no constants but where the
-binder writes a no-op Project over 12 of the 20 (q06 runs 1.6x slower with it left in). Where it
-applies, it beats every other pass: the empty-result queries run 6 to 160 times faster, because
-their joins and scans never run. Without folding, the suite reads 20,400 more rows.
+noise on the suite, and 1.04x on the golden queries, which have no constants, though the binder
+writes a no-op Project over 12 of the 20 and folding removes it. Where it applies, it beats every
+other pass: the 9 suite queries with an empty result run 3 to 120 times faster, because their
+joins and scans never run. Without folding, the suite reads 20,400 more rows.
 
 ## Cost model and statistics
 
@@ -287,17 +294,20 @@ query:
 * **Where it breaks one:** skewed values are off by up to 13x and correlated columns by up to
   20x. The catalog has no histograms or multi-column statistics, so these are known limits, and
   the report shows them.
+* **On Person A's 20 golden queries** (101 plan nodes): the median error is 1.07x and 90% of
+  nodes are within 2x. The worst are HAVING predicates on aggregates, which get System R's
+  fixed 1/3 (up to 7.1x), and a GROUP BY on two columns (3.9x).
 
 **The cost model** (`cost.py`) costs scan I/O, predicate evaluation, hash-join build and probe,
 join output, aggregation and sorting separately.
 
 * **Units:** each weight is a measured time per row for the numpy and Python code that Person
   C's code generator emits (`calibration.py`), so a cost reads as a predicted runtime.
-* **Prediction:** estimated cost and measured runtime have a rank correlation of 0.98 over the
+* **Prediction:** estimated cost and measured runtime have a rank correlation of 0.97 over the
   120 golden-query runs, and 0.93 over the 414 suite runs.
 * **Choosing between configurations:** for two configurations of the same query whose runtimes
-  differ by more than 10%, the model picks the faster one 83% of the time on the golden queries
-  and 82% on the suite.
+  differ by more than 10%, the model picks the faster one 89% of the time on the golden queries
+  and 83% on the suite.
 
 ## How correctness is checked
 
@@ -335,8 +345,12 @@ is checked against execution, not only against expected plan shapes.
   type, and `x * 0` is wrong for NULL. No contradiction detection between two columns or over IN
   lists. No folding of integer division.
 * **Join reordering.** Reordering never moves a join across a LEFT join. No cross product is
-  ever introduced, even when one would be cheaper (two tiny dimensions crossed first in a star
-  query); that is the policy this phase asked for.
+  introduced unless the graph forces one, even when one would be cheaper (two tiny dimensions
+  crossed first in a star query); that is the policy this phase asked for. Joins under a Sort or
+  Limit are not reordered, which costs q10 its 1.9x: if the team agrees that §7 should compare
+  tied rows as a set and accept any valid top-n, `JoinReordering(keep_row_order=False)` turns
+  them back on. The dynamic program is exponential: an 8-table clique (every pair joined) takes
+  about a second to plan; chains, stars and the golden queries take milliseconds.
 * **Column pruning.** It doesn't insert a Project where that would hide a column from a
   qualified reference above, because how qualifiers survive a Project isn't settled between the
   frontend and codegen.
