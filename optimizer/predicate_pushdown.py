@@ -41,6 +41,11 @@ folding owns those: it removes TRUE, and lifts FALSE as high as it can to
 short-circuit the largest possible subtree. Pushing constants down would
 undo that lift on every iteration.
 
+A conjunct that names an aggregate result by repeating its call (the
+binder writes ``HAVING COUNT(*) > 3`` that way) is never moved: it can only
+be evaluated above the Aggregate that computes it. That holds even when the
+call reads only group keys, as ``MAX(region)`` under ``GROUP BY region`` does.
+
 A conjunct is routed to a join side by strict name resolution against
 each side's output columns. If a conjunct cannot be routed (a column
 appears on both sides, or on neither, or a side's columns are unknown), it
@@ -55,7 +60,7 @@ from typing import Any
 from ir.expr import ColumnRef
 from ir.nodes import Aggregate, Filter, Join, Project, Scan, Sort
 
-from optimizer.columns import Ref, column_refs, output_columns, resolves, table_schema
+from optimizer.columns import Ref, agg_calls, column_refs, output_columns, resolves, table_schema
 from optimizer.expressions import TRUE, can_be_true, conjoin, rebuild, split_conjuncts, substitute
 
 LEFT, RIGHT = "L", "R"
@@ -74,9 +79,10 @@ class _Pusher:
 
     def push(self, node: Any, preds: list[Any]) -> Any:
         """Return a plan equivalent to ``Filter(node, AND(preds))``, with the predicates pushed as deep as allowed."""
-        constants, preds = _partition(preds, lambda p: not column_refs(p))
-        if constants:
-            return _filter(self.push(node, preds), constants)
+        # Constants, and conjuncts naming an aggregate result, stay where they are.
+        fixed, preds = _partition(preds, lambda p: not column_refs(p) or bool(agg_calls(p)))
+        if fixed:
+            return _filter(self.push(node, preds), fixed)
         if isinstance(node, Filter):
             return self.push(node.child, split_conjuncts(node.predicate) + preds)
         if isinstance(node, Scan):
