@@ -260,7 +260,7 @@ unfused. `tests/test_codegen_fusion.py` asserts fused stays under 60% of unfused
 ## Benchmark runner (Phase C6)
 
 ```bash
-python -m bench.runner --scale bench            # 20 golden queries, ~20 minutes
+python -m bench.runner --scale bench            # 20 golden queries, ~2.3 hours (1M lineitem rows)
 python -m bench.runner --scale tiny --queries q01 q07 --runs 3
 python -m bench.runner --summarize bench/results/runner_bench.csv
 ```
@@ -323,48 +323,53 @@ Two things the runner needed from outside codegen:
 
 ### Results at bench scale
 
-100,000 lineitem / 25,000 orders / 5,000 customer and part rows (the `bench` scale until
-main @ f82491a raised it to 1,000,000 lineitem rows), with Person B's optimizer
-(`b/phase-7-ablation` @ dfadf15). All 120 measurements give the reference answer.
-Full table: [`bench/results/runner_bench.md`](../bench/results/runner_bench.md); raw
-numbers: `bench/results/runner_bench.csv`.
+1,000,000 lineitem / 250,000 orders / 50,000 customer and part rows (the `bench` scale
+since main @ f82491a), on main @ 0993653 with Person B's latest optimizer
+(`b/phase-7-ablation` @ 454744a) and this branch merged. All 120 measurements give the
+reference answer. The whole run takes about 2.3 hours, almost all of it in the
+interpreter. Full table: [`bench/results/runner_bench.md`](../bench/results/runner_bench.md);
+raw numbers: `bench/results/runner_bench.csv`.
 
 | speedup (geometric mean over 20 queries) | |
 |---|---|
-| optimizer, interpreted (`interpreted_unoptimized` / `interpreted_optimized`) | **1.9x** |
-| optimizer, compiled (`compiled_unoptimized` / `compiled_optimized`) | **1.8x** |
-| compilation (`interpreted_optimized` / `compiled_optimized`) | **42.7x** |
-| fusion, unoptimized plans (the 7 queries where a chain fused) | **1.14x** |
-| fusion, optimized plans (the 2 queries where a chain fused) | **1.03x** |
-| total (`interpreted_unoptimized` / `compiled_optimized`) | **82.4x** |
+| optimizer, interpreted (`interpreted_unoptimized` / `interpreted_optimized`) | **2.1x** |
+| optimizer, compiled (`compiled_unoptimized` / `compiled_optimized`) | **2.0x** |
+| compilation (`interpreted_optimized` / `compiled_optimized`) | **35.5x** |
+| fusion, unoptimized plans (the 7 queries where a chain fused) | **1.22x** |
+| fusion, optimized plans (the 2 queries where a chain fused) | **1.00x** |
+| total (`interpreted_unoptimized` / `compiled_optimized`) | **73.4x** |
 
 What the numbers say:
 
-* **Compilation is the big lever:** 8x to 304x. It is largest on single-table scans and
-  filters (q03-q06: 229-304x), where the interpreter evaluates each expression row by
+* **Compilation is the big lever:** 8x to 295x. It is largest on single-table scans and
+  filters (q02-q06: 105-295x), where the interpreter evaluates each expression row by
   row and the generated code makes one numpy call per operator. It is smallest where the
   generated code still loops in Python: building and probing the join hash table and
-  assigning group ids (q13-q16, q19: 8-18x). Those loops are the next thing to
+  assigning group ids (q09-q11, q13-q16, q19: 8-18x). Those loops are the next thing to
   vectorise (e.g. grouping with `np.unique`, a sort-merge join with `np.searchsorted`).
-  Even counting the one-off generate + compile (0.6-12.8 ms), a query's first run is at
-  least 7.2x faster than the interpreter.
-* **The optimizer matters for joins:** 2.8-15x on q07-q12 and q19-q20, where predicates
-  pushed below the joins shrink both join inputs. It gives at most 1.35x on single-table
-  queries, where the scan already is the whole query. It contributes about the same
-  factor to both engines, so its gain and compilation's multiply.
+  Even counting the one-off generate + compile (0.5-7.3 ms), a query's first run is at
+  least 8.4x faster than the interpreter.
+* **The optimizer matters for joins:** 3.1-14.8x interpreted and 3.3-10x compiled on
+  q07-q12 and q19-q20, where predicates pushed below the joins shrink both join inputs
+  (q10: 72 s down to 4.9 s interpreted). It gives about 1x on single-table queries,
+  where the scan already is the whole query. It contributes about the same factor to
+  both engines (2.1x and 2.0x), so its gain and compilation's multiply.
 * **Fusion and the optimizer remove the same intermediates.** On bound plans fusion is
-  worth up to 1.52x (q02) and 1.34x (q05). After B's pushdown, pruning and folding,
+  worth up to 1.40x (q02) and 1.35x (q01). After B's pushdown, pruning and folding,
   almost every `Project <- Filter <- Scan` chain has become a single pushed, pruned
   Scan, which already is one pass. Only 2 optimized plans still contain a fusable chain,
-  and there it is worth 1.03x. Fusion pays when the optimizer can't simplify the plan
-  (or isn't run).
-* **Memory follows the data touched.** Peak memory falls from 0.8-93 MB (naive) to
-  0.1-18 MB (compiled, optimized). Pruning cuts cells scanned by 17-70%, which is most
-  visible in compiled joins (q10: 61 MB unoptimized, 5.8 MB optimized).
-* **Noise.** On the largest joins, repeated runs on this laptop vary by up to about 30%:
-  q11 fuses nothing, so its fused and unfused code is identical, yet it measured 342 and
-  259 ms. Treat differences under about 1.3x on those queries as noise. The ratios above
-  2x are stable across the three full runs made while building the runner.
+  and there it is worth nothing measurable (1.00x). Fusion pays when the optimizer can't
+  simplify the plan (or isn't run).
+* **Memory follows the data touched.** Peak memory falls from 9-931 MB (naive) to
+  0.7-179 MB (compiled, optimized). Pruning cuts cells scanned by 14-70%, which is most
+  visible in compiled joins (q10: 615 MB unoptimized, 59 MB optimized).
+* **Noise.** Where nothing fused, fused and unfused are the same code; those 31 pairs
+  differ by up to 1.13x (q06, 1.6 vs 1.8 ms) and 1.10x (q05). Treat differences under
+  about 1.15x as noise; q17's 0.97x fusion ratio is one of them.
+* **Earlier run, for comparison:** at the previous `bench` scale (100,000 lineitem rows,
+  B's optimizer @ dfadf15) the same runner measured compilation 42.7x, optimizer 1.9x,
+  total 82.4x. Ten times the data moves time into the joins and group-bys, where the
+  generated code still loops in Python, so the compilation factor drops a little.
 
 
 ## The demo (Phase C7)
