@@ -23,7 +23,7 @@ rows whose predicate is TRUE.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
@@ -35,6 +35,9 @@ Column = tuple[str | None, str]
 class Result:
     columns: list[Column]
     rows: list[tuple]
+    # Aggregate results by call (repr of the AggCall -> column index), so a
+    # HAVING or ORDER BY above can name them by repeating the call.
+    computed: dict[str, int] = field(default_factory=dict)
 
 
 def evaluate(plan, tables: dict[str, tuple[list[str], list[tuple]]]) -> Result:
@@ -49,12 +52,13 @@ def evaluate(plan, tables: dict[str, tuple[list[str], list[tuple]]]) -> Result:
         return out
     if isinstance(plan, Filter):
         child = evaluate(plan.child, tables)
-        return Result(child.columns, [r for r in child.rows if _eval(plan.predicate, child.columns, r) is True])
+        keep = [r for r in child.rows if _eval(plan.predicate, child.columns, r, child.computed) is True]
+        return Result(child.columns, keep, child.computed)
     if isinstance(plan, Project):
         child = evaluate(plan.child, tables)
         return Result(
             [(None, alias) for _, alias in plan.exprs],
-            [tuple(_eval(e, child.columns, r) for e, _ in plan.exprs) for r in child.rows],
+            [tuple(_eval(e, child.columns, r, child.computed) for e, _ in plan.exprs) for r in child.rows],
         )
     if isinstance(plan, Join):
         return _join(plan, evaluate(plan.left, tables), evaluate(plan.right, tables))
@@ -64,11 +68,11 @@ def evaluate(plan, tables: dict[str, tuple[list[str], list[tuple]]]) -> Result:
         child = evaluate(plan.child, tables)
         rows = list(child.rows)
         for expr, desc in reversed(plan.keys):  # stable sort: least significant key first
-            rows.sort(key=lambda r: _null_last_key(_eval(expr, child.columns, r)), reverse=desc)
-        return Result(child.columns, rows)
+            rows.sort(key=lambda r: _null_last_key(_eval(expr, child.columns, r, child.computed)), reverse=desc)
+        return Result(child.columns, rows, child.computed)
     if isinstance(plan, Limit):
         child = evaluate(plan.child, tables)
-        return Result(child.columns, child.rows[: plan.n])
+        return Result(child.columns, child.rows[: plan.n], child.computed)
     raise TypeError(f"reference evaluator cannot run {type(plan).__name__}")
 
 
@@ -102,7 +106,8 @@ def _aggregate(plan: Aggregate, child: Result) -> Result:
         key + tuple(_agg(call, child.columns, members) for call, _ in plan.aggs)
         for key, members in groups.items()
     ]
-    return Result(key_cols + [(None, alias) for _, alias in plan.aggs], rows)
+    computed = {repr(call): len(key_cols) + i for i, (call, _) in enumerate(plan.aggs)}
+    return Result(key_cols + [(None, alias) for _, alias in plan.aggs], rows, computed)
 
 
 def _agg(call: AggCall, columns, rows) -> object:
@@ -151,13 +156,17 @@ _COMPARE = {
 }
 
 
-def _eval(expr, columns: list[Column], row: tuple):
+def _eval(expr, columns: list[Column], row: tuple, computed: dict[str, int] | None = None):
     if isinstance(expr, ColumnRef):
         return row[resolve(columns, expr)]
+    if isinstance(expr, AggCall):  # names a result of the Aggregate below
+        if not computed or repr(expr) not in computed:
+            raise LookupError(f"aggregate {expr!r} is not produced by an Aggregate below")
+        return row[computed[repr(expr)]]
     if isinstance(expr, Literal):
         return expr.value
     if isinstance(expr, UnaryOp):
-        value = _eval(expr.operand, columns, row)
+        value = _eval(expr.operand, columns, row, computed)
         op = expr.op.upper()
         if op == "NOT":
             return None if value is None else not value
@@ -170,8 +179,8 @@ def _eval(expr, columns: list[Column], row: tuple):
         raise ValueError(f"unknown unary operator {expr.op!r}")
     if isinstance(expr, BinaryOp):
         op = expr.op.upper()
-        left = _eval(expr.left, columns, row)
-        right = _eval(expr.right, columns, row)
+        left = _eval(expr.left, columns, row, computed)
+        right = _eval(expr.right, columns, row, computed)
         if op == "AND":
             if left is False or right is False:
                 return False

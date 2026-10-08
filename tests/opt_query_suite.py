@@ -238,6 +238,23 @@ def having_on_aggregate():
 
 
 @query
+def having_names_an_aggregate_the_select_list_drops():
+    """SELECT region FROM sales GROUP BY region HAVING COUNT(*) > 12
+    -- as the binder builds it: HAVING repeats the call, and COUNT(*) is not selected"""
+    count = agg("count")
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region", "sales")], aggs=[(count, "count(*)")])
+    return project(Filter(child=grouped, predicate=op(">", count, lit(12))), (col("region", "sales"), "region"))
+
+
+@query
+def order_by_an_aggregate_the_select_list_drops():
+    """SELECT region FROM sales GROUP BY region ORDER BY SUM(amount) DESC"""
+    total = agg("sum", col("amount"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(total, "sum(amount)")])
+    return project(Sort(child=grouped, keys=[(total, True)]), *keep("region"))
+
+
+@query
 def group_by_without_aggs():
     """SELECT region FROM (SELECT region, COUNT(*) n FROM sales GROUP BY region)"""
     aggregate = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(agg("count"), "n")])

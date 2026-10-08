@@ -141,6 +141,27 @@ def test_aggregate_used_only_by_having_is_kept():
     assert aliases(aggregate) == ["total"]
 
 
+def test_aggregate_named_by_its_call_in_having_is_kept():
+    # The binder writes HAVING COUNT(*) > 12 with the call itself, not the alias
+    (aggregate,) = find(prune(S.having_names_an_aggregate_the_select_list_drops()), Aggregate)
+    assert aggregate.aggs == [(agg("count"), "count(*)")]
+
+
+def test_aggregate_named_by_its_call_in_order_by_is_kept():
+    (aggregate,) = find(prune(S.order_by_an_aggregate_the_select_list_drops()), Aggregate)
+    assert aggregate.aggs == [(agg("sum", col("amount")), "sum(amount)")]
+    assert scans(aggregate) == {"sales": ["region", "amount"]}
+
+
+def test_aggregates_nothing_names_are_still_dropped():
+    count, top = agg("count"), agg("max", col("qty"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")],
+                        aggs=[(count, "count(*)"), (top, "max(qty)")])
+    plan = project(Filter(child=grouped, predicate=op(">", count, lit(12))), *keep("region"))
+    (aggregate,) = find(prune(plan), Aggregate)
+    assert aggregate.aggs == [(count, "count(*)")]
+
+
 def test_group_keys_are_never_dropped():
     (aggregate,) = find(prune(S.group_by_without_aggs()), Aggregate)
     assert aggregate.group_keys == [col("region")]
