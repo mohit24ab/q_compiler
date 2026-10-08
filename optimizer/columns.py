@@ -16,7 +16,7 @@ import decimal
 import enum
 from typing import Any
 
-from ir.expr import ColumnRef
+from ir.expr import AggCall, ColumnRef
 from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
 
 Ref = tuple[str | None, str]
@@ -52,6 +52,43 @@ def _collect(x: Any, found: set[Ref]) -> None:
             _collect(item, found)
     elif not isinstance(x, _LEAVES):
         raise TypeError(f"cannot find column references inside {type(x).__name__}: {x!r}")
+
+
+# The qualifier of a Ref that names an aggregate call rather than a column.
+AGGREGATE = "<aggregate>"
+
+
+def agg_calls(expr: Any) -> list[Any]:
+    """Return every aggregate call (``AggCall``) inside an expression or list of expressions.
+
+    Above an Aggregate, a HAVING predicate or ORDER BY key can name one of the
+    Aggregate's results by repeating its call: ``HAVING COUNT(*) > 3`` holds
+    ``AggCall("count")``, not a reference to the result's alias.
+    """
+    found: list[Any] = []
+    _collect_calls(expr, found)
+    return found
+
+
+def _collect_calls(x: Any, found: list[Any]) -> None:
+    if isinstance(x, AggCall):
+        found.append(x)
+    elif dataclasses.is_dataclass(x) and not isinstance(x, type):
+        for f in dataclasses.fields(x):
+            _collect_calls(getattr(x, f.name), found)
+    elif isinstance(x, (list, tuple)):
+        for item in x:
+            _collect_calls(item, found)
+
+
+def aggregate_ref(call: Any) -> Ref:
+    """The Ref under which an expression above an Aggregate names that Aggregate's result for ``call``."""
+    return (AGGREGATE, repr(call))
+
+
+def requirements(expr: Any) -> set[Ref]:
+    """What an expression needs from below: the columns it reads, and the aggregate results it names."""
+    return column_refs(expr) | {aggregate_ref(c) for c in agg_calls(expr)}
 
 
 def scanned_tables(plan: Any) -> set[str]:
