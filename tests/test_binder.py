@@ -465,3 +465,23 @@ def test_syntax_error_raises_value_error(catalog: Catalog) -> None:
 def test_missing_from_clause_raises_value_error(catalog: Catalog) -> None:
     with pytest.raises(ValueError, match="Query must specify a FROM clause"):
         parse_and_bind("SELECT 1", catalog)
+
+
+def test_order_by_aggregate_and_alias_binding(catalog: Catalog) -> None:
+    """Verifies that ORDER BY binds successfully on an aggregate expression and an alias."""
+    sql_agg = "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY SUM(amount) DESC"
+    plan_agg = parse_and_bind(sql_agg, catalog)
+    assert isinstance(plan_agg, Sort)
+    assert isinstance(plan_agg.child, Project)
+    assert isinstance(plan_agg.child.child, Aggregate)
+    assert (AggCall(func="sum", arg=ColumnRef(table="sales", name="amount")), "total") in plan_agg.child.child.aggs
+    assert plan_agg.keys == [(ColumnRef(table=None, name="total"), True)]
+
+    sql_alias = "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC"
+    plan_alias = parse_and_bind(sql_alias, catalog)
+    assert isinstance(plan_alias, Sort)
+    assert isinstance(plan_alias.child, Project)
+    assert isinstance(plan_alias.child.child, Aggregate)
+    assert (AggCall(func="sum", arg=ColumnRef(table="sales", name="amount")), "total") in plan_alias.child.child.aggs
+    assert plan_alias.keys == [(ColumnRef(table=None, name="total"), True)]
+
