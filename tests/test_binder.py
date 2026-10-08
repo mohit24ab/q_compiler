@@ -485,3 +485,33 @@ def test_order_by_aggregate_and_alias_binding(catalog: Catalog) -> None:
     assert (AggCall(func="sum", arg=ColumnRef(table="sales", name="amount")), "total") in plan_alias.child.child.aggs
     assert plan_alias.keys == [(ColumnRef(table=None, name="total"), True)]
 
+
+def test_order_by_aggregate_not_in_select_list(catalog: Catalog) -> None:
+    """Verifies that ORDER BY binds aggregates not present in the SELECT projection list."""
+    sql_sum = "SELECT region FROM sales GROUP BY region ORDER BY SUM(amount) DESC"
+    plan_sum = parse_and_bind(sql_sum, catalog)
+    assert isinstance(plan_sum, Project)
+    assert isinstance(plan_sum.child, Sort)
+    assert isinstance(plan_sum.child.child, Project)
+    assert isinstance(plan_sum.child.child.child, Aggregate)
+    agg_calls = plan_sum.child.child.child.aggs
+    assert any(
+        agg == AggCall(func="sum", arg=ColumnRef(table="sales", name="amount")) and alias.startswith("__ord_agg_")
+        for agg, alias in agg_calls
+    )
+    assert [name for name, _ in plan_sum.schema()] == ["region"]
+
+    sql_count = "SELECT region FROM sales GROUP BY region ORDER BY COUNT(*) ASC"
+    plan_count = parse_and_bind(sql_count, catalog)
+    assert isinstance(plan_count, Project)
+    assert isinstance(plan_count.child, Sort)
+    assert isinstance(plan_count.child.child, Project)
+    assert isinstance(plan_count.child.child.child, Aggregate)
+    agg_calls_count = plan_count.child.child.child.aggs
+    assert any(
+        agg == AggCall(func="count", arg=None) and alias.startswith("__ord_agg_")
+        for agg, alias in agg_calls_count
+    )
+    assert [name for name, _ in plan_count.schema()] == ["region"]
+
+
