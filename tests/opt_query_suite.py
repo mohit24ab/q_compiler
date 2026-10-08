@@ -457,6 +457,25 @@ def having_splits_on_group_key():
 
 
 @query
+def having_on_an_aggregate_of_a_group_key_must_not_push():
+    """SELECT region FROM sales GROUP BY region HAVING MAX(region) = 'EU'
+    -- MAX(region) reads only the group key, but is a result of the Aggregate"""
+    top = agg("max", col("region"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(top, "max(region)")])
+    return project(Filter(child=grouped, predicate=op("=", top, lit("EU"))), *keep("region"))
+
+
+@query
+def having_mixes_an_aggregate_and_a_group_key():
+    """SELECT region FROM sales GROUP BY region HAVING SUM(amount) > 1500.0 AND region <> 'AP'
+    -- the binder's form: the region conjunct can push, the SUM conjunct cannot"""
+    total = agg("sum", col("amount"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(total, "sum(amount)")])
+    pred = op("AND", op(">", total, lit(1500.0)), op("<>", col("region"), lit("AP")))
+    return project(Filter(child=grouped, predicate=pred), *keep("region"))
+
+
+@query
 def constant_false_over_global_aggregate_must_not_push():
     """SELECT n FROM (SELECT COUNT(*) n FROM sales) WHERE 1 = 0"""
     aggregate = Aggregate(child=scan("sales"), group_keys=[], aggs=[(agg("count"), "n")])
