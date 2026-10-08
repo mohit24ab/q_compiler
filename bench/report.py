@@ -10,14 +10,14 @@ import tracemalloc
 from typing import Any, Callable
 
 from bench.data.generate import create_test_catalog, generate_dataset
-from bench.harness.differential import (
+from bench.harness import (
     compile_and_run,
     generate,
     interpret,
     optimize,
 )
 from catalog.catalog import Catalog
-from frontend.binder import parse_and_bind
+from frontend import parse_and_bind
 from ir.nodes import PlanNode, Scan
 
 
@@ -294,31 +294,65 @@ def generate_charts(
     # 3. Generate ablation_chart.png from docs/ablation/codegen.csv
     ablation_data = load_ablation_data(ablation_csv)
     if ablation_data:
-        queries_ab = [row["query"] for row in ablation_data]
-        metric_cols = [c for c in ablation_data[0].keys() if c != "query"]
+        if "config" in ablation_data[0]:
+            configs = sorted(list({row["config"] for row in ablation_data}))
+            seen_q: list[str] = []
+            for r in ablation_data:
+                if r["query"] not in seen_q:
+                    seen_q.append(r["query"])
+            queries_ab = seen_q[:10] if len(seen_q) > 15 else seen_q
 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        bar_w = 0.8 / len(metric_cols)
-        idxs = range(len(queries_ab))
+            fig, ax = plt.subplots(figsize=(12, 6))
+            bar_w = 0.8 / max(len(configs), 1)
+            idxs = range(len(queries_ab))
 
-        for j, col_name in enumerate(metric_cols):
-            vals = [float(row[col_name]) for row in ablation_data]
-            pos = [x + (j - len(metric_cols) / 2) * bar_w for x in idxs]
-            ax.bar(pos, vals, width=bar_w, label=col_name)
+            for j, cfg in enumerate(configs):
+                vals = []
+                for q in queries_ab:
+                    matching = [float(r["runtime_ms"]) for r in ablation_data if r["query"] == q and r["config"] == cfg]
+                    vals.append(matching[0] if matching else 0.0)
+                pos = [x + (j - len(configs) / 2) * bar_w for x in idxs]
+                ax.bar(pos, vals, width=bar_w, label=cfg)
 
-        ax.set_xlabel("Query", fontsize=12, fontweight="bold")
-        ax.set_ylabel("Runtime (ms)", fontsize=12, fontweight="bold")
-        ax.set_title("Pass Contribution & Ablation Breakdown", fontsize=14, fontweight="bold")
-        ax.set_xticks(list(idxs))
-        ax.set_xticklabels(queries_ab)
-        ax.legend(title="Stage / Pass")
-        ax.grid(axis="y", linestyle="--", alpha=0.7)
-        plt.tight_layout()
+            ax.set_xlabel("Query", fontsize=12, fontweight="bold")
+            ax.set_ylabel("Runtime (ms)", fontsize=12, fontweight="bold")
+            ax.set_title("Pass Contribution & Ablation Breakdown", fontsize=14, fontweight="bold")
+            ax.set_xticks(list(idxs))
+            ax.set_xticklabels(queries_ab, rotation=45, ha="right")
+            ax.legend(title="Configuration")
+            ax.grid(axis="y", linestyle="--", alpha=0.7)
+            plt.tight_layout()
 
-        ablation_path = out_dir / "ablation_chart.png"
-        fig.savefig(ablation_path, dpi=300)
-        plt.close(fig)
-        output_manifest["ablation_chart"] = ablation_path
+            ablation_path = out_dir / "ablation_chart.png"
+            fig.savefig(ablation_path, dpi=300)
+            plt.close(fig)
+            output_manifest["ablation_chart"] = ablation_path
+        else:
+            queries_ab = [row["query"] for row in ablation_data]
+            metric_cols = [c for c in ablation_data[0].keys() if c != "query"]
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            bar_w = 0.8 / len(metric_cols)
+            idxs = range(len(queries_ab))
+
+            for j, col_name in enumerate(metric_cols):
+                vals = [float(row[col_name]) for row in ablation_data]
+                pos = [x + (j - len(metric_cols) / 2) * bar_w for x in idxs]
+                ax.bar(pos, vals, width=bar_w, label=col_name)
+
+            ax.set_xlabel("Query", fontsize=12, fontweight="bold")
+            ax.set_ylabel("Runtime (ms)", fontsize=12, fontweight="bold")
+            ax.set_title("Pass Contribution & Ablation Breakdown", fontsize=14, fontweight="bold")
+            ax.set_xticks(list(idxs))
+            ax.set_xticklabels(queries_ab)
+            ax.legend(title="Stage / Pass")
+            ax.grid(axis="y", linestyle="--", alpha=0.7)
+            plt.tight_layout()
+
+            ablation_path = out_dir / "ablation_chart.png"
+            fig.savefig(ablation_path, dpi=300)
+            plt.close(fig)
+            output_manifest["ablation_chart"] = ablation_path
 
     return output_manifest
 

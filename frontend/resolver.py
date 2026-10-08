@@ -62,7 +62,8 @@ class Resolver:
             col_names = [col_name for col_name, _ in rel_schema]
             if name not in col_names:
                 raise SemanticError(f"Column '{name}' not found in table '{table}'.")
-            return ColumnRef(table=target_rel, name=name)
+            canonical_table = self.alias_to_table.get(target_rel, target_rel)
+            return ColumnRef(table=canonical_table, name=name)
         else:
             matches: list[str] = []
             for rel_name, rel_schema in self.schemas.items():
@@ -76,7 +77,8 @@ class Resolver:
                 raise SemanticError(
                     f"Ambiguous column reference '{name}' found across active tables: {matches}."
                 )
-            return ColumnRef(table=matches[0], name=name)
+            canonical_table = self.alias_to_table.get(matches[0], matches[0])
+            return ColumnRef(table=canonical_table, name=name)
 
     def get_column_type(self, col: ColumnRef | str, table: str | None = None) -> DType:
         """Returns the DType for a qualified or unqualified column reference."""

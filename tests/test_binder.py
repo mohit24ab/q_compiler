@@ -275,12 +275,12 @@ def test_inner_join(catalog: Catalog) -> None:
     cond = join_node.condition
     assert isinstance(cond, BinaryOp)
     assert cond.op == "="
-    assert cond.left == ColumnRef(table="o", name="cust_id")
-    assert cond.right == ColumnRef(table="c", name="id")
+    assert cond.left == ColumnRef(table="orders", name="cust_id")
+    assert cond.right == ColumnRef(table="customer", name="id")
 
     expected = (
-        "Project[o.id AS id, c.name AS name]\n"
-        "  Join[kind=inner, cond=o.cust_id = c.id]\n"
+        "Project[orders.id AS id, customer.name AS name]\n"
+        "  Join[kind=inner, cond=orders.cust_id = customer.id]\n"
         "    Scan[orders]\n"
         "    Scan[customer]"
     )
@@ -297,8 +297,8 @@ def test_left_join(catalog: Catalog) -> None:
     assert plan.child.kind == "left"
 
     expected = (
-        "Project[o.id AS id, c.name AS name]\n"
-        "  Join[kind=left, cond=o.cust_id = c.id]\n"
+        "Project[orders.id AS id, customer.name AS name]\n"
+        "  Join[kind=left, cond=orders.cust_id = customer.id]\n"
         "    Scan[orders]\n"
         "    Scan[customer]"
     )
@@ -313,13 +313,13 @@ def test_multi_table_unqualified_resolution(catalog: Catalog) -> None:
 
     assert isinstance(plan, Project)
     assert plan.exprs == [
-        (ColumnRef(table="o", name="cust_id"), "cust_id"),
-        (ColumnRef(table="c", name="name"), "name"),
+        (ColumnRef(table="orders", name="cust_id"), "cust_id"),
+        (ColumnRef(table="customer", name="name"), "name"),
     ]
 
     expected = (
-        "Project[o.cust_id AS cust_id, c.name AS name]\n"
-        "  Join[kind=inner, cond=o.cust_id = c.id]\n"
+        "Project[orders.cust_id AS cust_id, customer.name AS name]\n"
+        "  Join[kind=inner, cond=orders.cust_id = customer.id]\n"
         "    Scan[orders]\n"
         "    Scan[customer]"
     )
@@ -388,26 +388,26 @@ def test_canonical_full_pipeline_hierarchy(catalog: Catalog) -> None:
 
     assert isinstance(plan.child.child, Project)
     assert plan.child.child.exprs == [
-        (ColumnRef(table="c", name="name"), "name"),
+        (ColumnRef(table="customer", name="name"), "name"),
         (ColumnRef(table=None, name="spent"), "spent"),
     ]
 
     assert isinstance(plan.child.child.child, Filter)  # HAVING Filter
     having_pred = plan.child.child.child.predicate
     assert isinstance(having_pred, BinaryOp)
-    assert having_pred.left == AggCall(func="sum", arg=ColumnRef(table="o", name="total"))
+    assert having_pred.left == AggCall(func="sum", arg=ColumnRef(table="orders", name="total"))
 
     assert isinstance(plan.child.child.child.child, Aggregate)
     agg_node = plan.child.child.child.child
-    assert agg_node.group_keys == [ColumnRef(table="c", name="name")]
+    assert agg_node.group_keys == [ColumnRef(table="customer", name="name")]
     assert agg_node.aggs == [
-        (AggCall(func="sum", arg=ColumnRef(table="o", name="total")), "spent")
+        (AggCall(func="sum", arg=ColumnRef(table="orders", name="total")), "spent")
     ]
 
     assert isinstance(agg_node.child, Filter)  # WHERE Filter
     where_pred = agg_node.child.predicate
     assert isinstance(where_pred, BinaryOp)
-    assert where_pred.left == ColumnRef(table="o", name="total")
+    assert where_pred.left == ColumnRef(table="orders", name="total")
 
     assert isinstance(agg_node.child.child, Join)
     join_node = agg_node.child.child

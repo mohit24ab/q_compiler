@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from bench.data.generate import create_test_catalog, generate_dataset
-from bench.harness.differential import (
+from bench.harness import (
     QueryResult,
     compare_results,
     run_differential_query,

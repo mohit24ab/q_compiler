@@ -284,8 +284,9 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
     if is_wildcard:
         for rel_name in resolver.relation_order:
+            canonical_table = resolver.alias_to_table.get(rel_name, rel_name)
             for col_name, _ in resolver.schemas[rel_name]:
-                project_exprs.append((ColumnRef(table=rel_name, name=col_name), col_name))
+                project_exprs.append((ColumnRef(table=canonical_table, name=col_name), col_name))
     else:
         for se in select_items:
             if isinstance(se, exp.Alias):

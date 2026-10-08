@@ -111,10 +111,10 @@ def test_valid_multi_table_joins_with_aliases(catalog: Catalog) -> None:
         ("region", DType.STRING),
     ]
     assert plan.exprs == [
-        (ColumnRef(table="o", name="id"), "id"),
-        (ColumnRef(table="c", name="name"), "name"),
-        (ColumnRef(table="o", name="total"), "total"),
-        (ColumnRef(table="s", name="region"), "region"),
+        (ColumnRef(table="orders", name="id"), "id"),
+        (ColumnRef(table="customer", name="name"), "name"),
+        (ColumnRef(table="orders", name="total"), "total"),
+        (ColumnRef(table="sales", name="region"), "region"),
     ]
 
 
@@ -222,9 +222,9 @@ def test_valid_unqualified_columns_resolved_across_joins(catalog: Catalog) -> No
 
     assert isinstance(plan, Project)
     assert plan.exprs == [
-        (ColumnRef(table="o", name="cust_id"), "cust_id"),
-        (ColumnRef(table="c", name="name"), "name"),
-        (ColumnRef(table="o", name="total"), "total"),
+        (ColumnRef(table="orders", name="cust_id"), "cust_id"),
+        (ColumnRef(table="customer", name="name"), "name"),
+        (ColumnRef(table="orders", name="total"), "total"),
     ]
     assert plan.schema() == [
         ("cust_id", DType.INT),
@@ -336,15 +336,15 @@ def test_resolver_standalone(catalog: Catalog) -> None:
 
     # Qualified via alias
     col1 = resolver.resolve_column("amount", table="s")
-    assert col1 == ColumnRef(table="s", name="amount")
+    assert col1 == ColumnRef(table="sales", name="amount")
 
     # Qualified via original table name
     col2 = resolver.resolve_column("amount", table="sales")
-    assert col2 == ColumnRef(table="s", name="amount")
+    assert col2 == ColumnRef(table="sales", name="amount")
 
     # Unqualified
     col3 = resolver.resolve_column("amount")
-    assert col3 == ColumnRef(table="s", name="amount")
+    assert col3 == ColumnRef(table="sales", name="amount")
 
     # Unknown table
     with pytest.raises(SemanticError, match=r"Table 'unknown' not found in active scope"):

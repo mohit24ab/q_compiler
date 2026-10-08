@@ -7,7 +7,7 @@ import math
 from typing import Any
 
 from catalog.catalog import Catalog
-from frontend.binder import parse_and_bind
+from frontend import parse_and_bind
 from ir.expr import AggCall, BinaryOp, ColumnRef, Expr, Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, PlanNode, Project, Scan, Sort
 from ir.printer import format_expr, format_plan
@@ -123,21 +123,8 @@ def _eval_expr(expr: Expr, row: dict[str, Any]) -> Any:
             key = f"{expr.table}.{expr.name}"
             if key in row:
                 return row[key]
-            alias_map = {"o": "orders", "c": "customer", "l": "lineitem", "p": "part"}
-            full_t = alias_map.get(expr.table, expr.table)
-            key_full = f"{full_t}.{expr.name}"
-            if key_full in row:
-                return row[key_full]
-            rev_map = {"orders": "o", "customer": "c", "lineitem": "l", "part": "p"}
-            short_t = rev_map.get(expr.table, expr.table)
-            key_short = f"{short_t}.{expr.name}"
-            if key_short in row:
-                return row[key_short]
         if expr.name in row:
             return row[expr.name]
-        for k, v in row.items():
-            if k.endswith(f".{expr.name}"):
-                return v
         raise KeyError(f"Column '{expr.name}' (table '{expr.table}') not found in row keys: {list(row.keys())}")
 
     if isinstance(expr, Literal):
@@ -187,12 +174,12 @@ def _eval_expr(expr: Expr, row: dict[str, Any]) -> Any:
         if isinstance(left, datetime.date) and isinstance(right, str):
             try:
                 right = datetime.date.fromisoformat(right)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         elif isinstance(left, str) and isinstance(right, datetime.date):
             try:
                 left = datetime.date.fromisoformat(left)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
         if op in ("=", "=="):
@@ -230,8 +217,6 @@ def naive_interpret(plan: PlanNode, tables: dict[str, Any]) -> tuple[list[str], 
             source = tables[node.table]
             pylist = source.to_pylist() if hasattr(source, "to_pylist") else list(source)
             fields = [(c, node.table) for c in (source.column_names if hasattr(source, "column_names") else pylist[0].keys())]
-            alias_map = {"orders": "o", "customer": "c", "lineitem": "l", "part": "p"}
-            short_t = alias_map.get(node.table, node.table)
 
             rows = []
             for r in pylist:
@@ -239,7 +224,6 @@ def naive_interpret(plan: PlanNode, tables: dict[str, Any]) -> tuple[list[str], 
                 for k, v in r.items():
                     row_dict[k] = v
                     row_dict[f"{node.table}.{k}"] = v
-                    row_dict[f"{short_t}.{k}"] = v
                 if node.pushed_predicate is not None:
                     if not _eval_expr(node.pushed_predicate, row_dict):
                         continue
@@ -269,7 +253,7 @@ def naive_interpret(plan: PlanNode, tables: dict[str, Any]) -> tuple[list[str], 
                         r_index.setdefault(k, []).append(r_r)
                     eq_probe = node.condition.left
                     is_equi = True
-                except Exception:
+                except (KeyError, AttributeError):
                     try:
                         _ = _eval_expr(node.condition.left, r_rows[0])
                         _ = _eval_expr(node.condition.right, l_rows[0])
@@ -278,18 +262,15 @@ def naive_interpret(plan: PlanNode, tables: dict[str, Any]) -> tuple[list[str], 
                             r_index.setdefault(k, []).append(r_r)
                         eq_probe = node.condition.right
                         is_equi = True
-                    except Exception:
-                        pass
+                    except (KeyError, AttributeError):
+                        is_equi = False
 
             out_rows = []
             if is_equi and eq_probe is not None:
                 null_r = {k: None for k in r_rows[0]} if r_rows else {}
                 for l_r in l_rows:
-                    try:
-                        k = _eval_expr(eq_probe, l_r)
-                        matches = r_index.get(k, [])
-                    except Exception:
-                        matches = []
+                    k = _eval_expr(eq_probe, l_r)
+                    matches = r_index.get(k, [])
                     for r_r in matches:
                         out_rows.append({**l_r, **r_r})
                     if node.kind == "left" and not matches:
@@ -418,10 +399,13 @@ def optimize(plan: PlanNode, catalog: Catalog) -> tuple[PlanNode, list[Any]]:
     """Runs query optimization if Person B's optimizer is available, else passthrough."""
     try:
         import optimizer
-        if hasattr(optimizer, "optimize"):
-            return optimizer.optimize(plan, catalog)
-    except Exception:
-        pass
+    except ModuleNotFoundError as e:
+        if e.name == "optimizer":
+            return plan, []
+        raise
+
+    if hasattr(optimizer, "optimize"):
+        return optimizer.optimize(plan, catalog)
     return plan, []
 
 
@@ -429,10 +413,14 @@ def interpret(plan: PlanNode, tables: dict[str, Any]) -> Any:
     """Runs query interpretation using Person C's runtime if available, else naive reference."""
     try:
         import runtime.interpreter
-        if hasattr(runtime.interpreter, "interpret"):
-            return runtime.interpreter.interpret(plan, tables)
-    except Exception:
-        pass
+    except ModuleNotFoundError as e:
+        if e.name in ("runtime", "runtime.interpreter"):
+            cols, rows = naive_interpret(plan, tables)
+            return QueryResult(column_names=cols, rows=rows)
+        raise
+
+    if hasattr(runtime.interpreter, "interpret"):
+        return runtime.interpreter.interpret(plan, tables)
     cols, rows = naive_interpret(plan, tables)
     return QueryResult(column_names=cols, rows=rows)
 
@@ -441,17 +429,27 @@ def generate(plan: PlanNode, catalog: Catalog | None = None) -> str:
     """Generates executable module source using Person C's codegen if available, else fallback."""
     try:
         import codegen.generate
-        if hasattr(codegen.generate, "generate"):
-            return codegen.generate.generate(plan, catalog)
-    except Exception:
-        pass
+    except ModuleNotFoundError as e:
+        if e.name in ("codegen", "codegen.generate"):
+            pid = next(_PLAN_COUNTER)
+            _CACHED_PLANS[pid] = plan
+            return (
+                f'"""Fallback generated query runner."""\n'
+                f"def run(tables):\n"
+                f"    from bench.harness import _execute_cached_plan\n"
+                f"    return _execute_cached_plan({pid}, tables)\n"
+            )
+        raise
+
+    if hasattr(codegen.generate, "generate"):
+        return codegen.generate.generate(plan, catalog)
 
     pid = next(_PLAN_COUNTER)
     _CACHED_PLANS[pid] = plan
     return (
         f'"""Fallback generated query runner."""\n'
         f"def run(tables):\n"
-        f"    from bench.harness.differential import _execute_cached_plan\n"
+        f"    from bench.harness import _execute_cached_plan\n"
         f"    return _execute_cached_plan({pid}, tables)\n"
     )
 
@@ -460,10 +458,16 @@ def compile_and_run(source: str, tables: dict[str, Any]) -> Any:
     """Compiles and executes generated source module using Person C's runner or fallback."""
     try:
         import codegen.runner
-        if hasattr(codegen.runner, "compile_and_run"):
-            return codegen.runner.compile_and_run(source, tables)
-    except Exception:
-        pass
+    except ModuleNotFoundError as e:
+        if e.name in ("codegen", "codegen.runner"):
+            codegen_runner = None
+        else:
+            raise
+    else:
+        codegen_runner = codegen.runner
+
+    if codegen_runner is not None and hasattr(codegen_runner, "compile_and_run"):
+        return codegen_runner.compile_and_run(source, tables)
 
     namespace: dict[str, Any] = {}
     code = compile(source, "<differential-generated>", "exec")
