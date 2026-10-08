@@ -57,16 +57,16 @@ actual 3 is a q-error of 3.
 
 | node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all nodes | 165 | 1.00 | 1.50 | 3.00 | 96% | 32 | 23 |
-| Scan | 78 | 1.00 | 1.40 | 1.60 | 100% | 1 | 9 |
-| Project | 30 | 1.25 | 2.20 | 3.00 | 90% | 11 | 7 |
+| all nodes | 181 | 1.00 | 1.54 | 3.00 | 96% | 32 | 27 |
+| Scan | 82 | 1.00 | 1.33 | 1.60 | 100% | 1 | 9 |
+| Project | 34 | 1.25 | 2.20 | 3.00 | 88% | 11 | 9 |
 | Limit | 2 | 1.00 | 1.00 | 1.00 | 100% | 0 | 0 |
-| Sort | 6 | 1.03 | 1.29 | 1.29 | 100% | 2 | 0 |
-| Aggregate | 11 | 1.00 | 1.25 | 1.25 | 100% | 2 | 0 |
-| Filter | 15 | 1.00 | 3.00 | 3.00 | 87% | 1 | 4 |
+| Sort | 7 | 1.00 | 1.29 | 1.29 | 100% | 2 | 0 |
+| Aggregate | 15 | 1.00 | 1.25 | 1.25 | 100% | 2 | 0 |
+| Filter | 18 | 1.00 | 3.00 | 3.00 | 83% | 1 | 6 |
 | Join | 23 | 1.29 | 1.55 | 2.20 | 96% | 15 | 3 |
 
-96% of the 165 nodes are within 2x. The worst ten:
+96% of the 181 nodes are within 2x. The worst ten:
 
 | query | node | estimated | actual | q-error |
 |---|---|--:|--:|--:|
@@ -74,17 +74,19 @@ actual 3 is a q-error of 3.
 |  | `Filter[total > 1000.0]` | 1.3 | 4 | 3.00 |
 | left_join_is_null_must_not_push | `Project[customer.c_name AS c_name]` | 1.0 | 3 | 3.00 |
 |  | `Filter[orders.o_id IS NULL]` | 1.0 | 3 | 3.00 |
+| having_names_an_aggregate_the_select_list_drops | `Project[sales.region AS region]` | 1.3 | 3 | 2.25 |
+|  | `Filter[count(*) > 12]` | 1.3 | 3 | 2.25 |
 | filter_through_project_over_join | `Project[orders.o_id AS oid, customer.c_segment AS seg]` | 11.0 | 5 | 2.20 |
 |  | `Join[kind=inner, cond=orders.o_custkey = customer.c_id]` | 11.0 | 5 | 2.20 |
 | having_splits_on_group_key | `Filter[total > 1500.0]` | 1.0 | 2 | 2.00 |
-| filter_through_three_way_join | `Project[o_id]` | 12.5 | 20 | 1.60 |
-|  | `Join[kind=inner, cond=c_nationkey = n_id]` | 12.5 | 20 | 1.60 |
-|  | `Scan[nation, columns=[n_id], pushed=n_region = 'AMERICA']` | 1.2 | 2 | 1.60 |
+| having_mixes_an_aggregate_and_a_group_key | `Project[region]` | 1.0 | 2 | 2.00 |
 
-The two recurring causes: `having_on_aggregate` and `having_splits_on_group_key` filter on a
-SUM, which has no statistics (the 1/3 default); and `left_join_is_null_must_not_push` counts
+Three causes recur. The HAVING queries filter on an aggregate result (a SUM or COUNT),
+which has no statistics, so it gets System R's 1/3. `left_join_is_null_must_not_push` counts
 customers with no orders, which the containment assumption says do not exist, because
-`orders.o_custkey` and `customer.c_id` have the same number of distinct values.
+`orders.o_custkey` and `customer.c_id` have the same number of distinct values. And
+`filter_through_project_over_join` is containment again: `orders.o_custkey` includes the
+keys 13 and 14, which no customer has.
 
 <details><summary>Every node of every query</summary>
 
@@ -93,7 +95,7 @@ customers with no orders, which the containment assumption says do not exist, be
 | two_of_twenty | `Scan[sales, columns=[sale_id, amount]]` | 60.0 | 60 | 1.00 |
 | filter_only_column | `Scan[sales, columns=[sale_id], pushed=region = 'EU']` | 15.0 | 22 | 1.47 |
 | computed_projection | `Project[qty * amount AS value]` | 11.7 | 18 | 1.54 |
-|  | &nbsp;&nbsp;`Scan[sales, columns=[amount, qty], pushed=(region = 'EU') AND (qty > 2)]` | 11.7 | 18 | 1.54 |
+|  | &nbsp;&nbsp;`Scan[sales, columns=[amount, qty], pushed=region = 'EU' AND qty > 2]` | 11.7 | 18 | 1.54 |
 | select_star | `Scan[sales, pushed=qty > 3]` | 40.0 | 41 | 1.02 |
 | pushed_predicate_column | `Scan[sales, columns=[sale_id], pushed=amount > 100.0]` | 35.0 | 34 | 1.03 |
 | sort_key_only_column | `Limit[n=5]` | 5.0 | 5 | 1.00 |
@@ -107,6 +109,14 @@ customers with no orders, which the containment assumption says do not exist, be
 | having_on_aggregate | `Project[region]` | 1.3 | 4 | 3.00 |
 |  | &nbsp;&nbsp;`Filter[total > 1000.0]` | 1.3 | 4 | 3.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS total]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount]]` | 60.0 | 60 | 1.00 |
+| having_names_an_aggregate_the_select_list_drops | `Project[sales.region AS region]` | 1.3 | 3 | 2.25 |
+|  | &nbsp;&nbsp;`Filter[count(*) > 12]` | 1.3 | 3 | 2.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=sales.region, aggs=count(*) AS count(*)]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
+| order_by_an_aggregate_the_select_list_drops | `Project[region]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;`Sort[keys=sum(amount) DESC]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS sum(amount)]` | 4.0 | 4 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount]]` | 60.0 | 60 | 1.00 |
 | group_by_without_aggs | `Aggregate[group=region]` | 4.0 | 4 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
@@ -149,10 +159,10 @@ customers with no orders, which the containment assumption says do not exist, be
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
-| stacked_filters | `Scan[sales, pushed=(qty > 2) AND (region = 'EU')]` | 11.7 | 18 | 1.54 |
-| filter_merges_with_pushed_predicate | `Scan[sales, columns=[sale_id], pushed=(amount > 50.0) AND (qty > 5)]` | 20.8 | 25 | 1.20 |
+| stacked_filters | `Scan[sales, pushed=qty > 2 AND region = 'EU']` | 11.7 | 18 | 1.54 |
+| filter_merges_with_pushed_predicate | `Scan[sales, columns=[sale_id], pushed=amount > 50.0 AND qty > 5]` | 20.8 | 25 | 1.20 |
 | filter_through_computed_project | `Project[sale_id, qty * amount AS value]` | 20.0 | 28 | 1.40 |
-|  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount, qty], pushed=(qty * amount) > 500.0]` | 20.0 | 28 | 1.40 |
+|  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount, qty], pushed=qty * amount > 500.0]` | 20.0 | 28 | 1.40 |
 | filter_through_sort | `Sort[keys=qty DESC, sale_id ASC]` | 20.0 | 19 | 1.05 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, qty], pushed=qty < 4]` | 20.0 | 19 | 1.05 |
 | filter_above_limit_must_not_push | `Filter[qty > 5]` | 4.4 | 5 | 1.12 |
@@ -160,7 +170,7 @@ customers with no orders, which the containment assumption says do not exist, be
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Sort[keys=sale_id ASC]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[sale_id, qty]]` | 60.0 | 60 | 1.00 |
 | where_splits_across_inner_join | `Project[o_id, c_name]` | 3.9 | 6 | 1.55 |
-|  | &nbsp;&nbsp;`Join[kind=inner, cond=(o_custkey = c_id) AND ((o_custkey + c_nationkey) > 4)]` | 3.9 | 6 | 1.55 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id AND o_custkey + c_nationkey > 4]` | 3.9 | 6 | 1.55 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey], pushed=o_total > 100.0]` | 31.9 | 29 | 1.10 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name, c_nationkey], pushed=c_segment = 'AUTO']` | 4.0 | 4 | 1.00 |
 | single_side_on_conjuncts_of_inner_join | `Project[o_id]` | 13.3 | 14 | 1.05 |
@@ -188,18 +198,26 @@ customers with no orders, which the containment assumption says do not exist, be
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 | left_join_or_with_preserved_side_must_not_push | `Project[customer.c_name AS c_name, orders.o_total AS o_total]` | 25.2 | 21 | 1.20 |
-|  | &nbsp;&nbsp;`Filter[(orders.o_total > 200.0) OR (customer.c_name = 'cust#11')]` | 25.2 | 21 | 1.20 |
+|  | &nbsp;&nbsp;`Filter[orders.o_total > 200.0 OR customer.c_name = 'cust#11']` | 25.2 | 21 | 1.20 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey]` | 41.0 | 34 | 1.21 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
 | left_join_on_conjuncts | `Project[c_name, o_total]` | 12.0 | 16 | 1.33 |
-|  | &nbsp;&nbsp;`Join[kind=left, cond=(c_id = o_custkey) AND (c_segment = 'AUTO')]` | 12.0 | 16 | 1.33 |
+|  | &nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey AND c_segment = 'AUTO']` | 12.0 | 16 | 1.33 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name, c_segment]]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total], pushed=o_status = 'F']` | 13.3 | 20 | 1.50 |
 | having_splits_on_group_key | `Filter[total > 1500.0]` | 1.0 | 2 | 2.00 |
 |  | &nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS total]` | 3.0 | 3 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount], pushed=region <> 'AP']` | 45.0 | 48 | 1.07 |
-| constant_false_over_global_aggregate_must_not_push | `Filter[false]` | 0.0 | 0 | 1.00 |
+| having_on_an_aggregate_of_a_group_key_must_not_push | `Project[region]` | 0.4 | 1 | 1.00 |
+|  | &nbsp;&nbsp;`Filter[max(region) = 'EU']` | 0.4 | 1 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=max(region) AS max(region)]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
+| having_mixes_an_aggregate_and_a_group_key | `Project[region]` | 1.0 | 2 | 2.00 |
+|  | &nbsp;&nbsp;`Filter[sum(amount) > 1500.0]` | 1.0 | 2 | 2.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS sum(amount)]` | 3.0 | 3 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount], pushed=region <> 'AP']` | 45.0 | 48 | 1.07 |
+| constant_false_over_global_aggregate_must_not_push | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Aggregate[aggs=count(*) AS n]` | 1.0 | 1 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
 | filter_through_project_over_join | `Project[orders.o_id AS oid, customer.c_segment AS seg]` | 11.0 | 5 | 2.20 |
@@ -210,20 +228,20 @@ customers with no orders, which the containment assumption says do not exist, be
 | constant_date_comparison | `Scan[sales, columns=[sale_id], pushed=region = 'EU']` | 15.0 | 22 | 1.47 |
 | or_true_removes_the_filter | `Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
 | double_negation | `Scan[sales, columns=[sale_id], pushed=qty > 4]` | 33.3 | 35 | 1.05 |
-| contradiction_on_equalities | `Filter[false]` | 0.0 | 0 | 1.00 |
+| contradiction_on_equalities | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| contradiction_on_range | `Filter[false]` | 0.0 | 0 | 1.00 |
+| contradiction_on_range | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| satisfiable_point_range | `Scan[sales, columns=[sale_id], pushed=(qty >= 2) AND (qty <= 2)]` | 6.7 | 7 | 1.05 |
-| null_comparison_rejects_every_row | `Filter[false]` | 0.0 | 0 | 1.00 |
+| satisfiable_point_range | `Scan[sales, columns=[sale_id], pushed=qty >= 2 AND qty <= 2]` | 6.7 | 7 | 1.05 |
+| null_comparison_rejects_every_row | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| false_filter_over_join_and_sort | `Filter[false]` | 0.0 | 0 | 1.00 |
+| false_filter_over_join_and_sort | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Sort[keys=o_id ASC]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[o_id, c_name]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
-| empty_side_of_inner_join | `Filter[false]` | 0.0 | 0 | 1.00 |
+| empty_side_of_inner_join | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Project[o_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
@@ -231,27 +249,27 @@ customers with no orders, which the containment assumption says do not exist, be
 | empty_right_side_of_left_join_must_not_lift | `Project[c_name, o_total]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Filter[false]` | 0.0 | 0 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
 | global_aggregate_over_empty_must_not_lift | `Aggregate[aggs=count(*) AS n, sum(amount) AS s]` | 1.0 | 1 | 1.00 |
-|  | &nbsp;&nbsp;`Filter[false]` | 0.0 | 0 | 1.00 |
+|  | &nbsp;&nbsp;`Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[amount]]` | 60.0 | 60 | 1.00 |
-| grouped_aggregate_over_empty | `Filter[false]` | 0.0 | 0 | 1.00 |
+| grouped_aggregate_over_empty | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Aggregate[group=region, aggs=count(*) AS n]` | 4.0 | 4 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
-| limit_zero | `Filter[false]` | 0.0 | 0 | 1.00 |
+| limit_zero | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Sort[keys=sale_id ASC]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
 | folded_select_expressions | `Project[sale_id, 6 AS six, 3.0 AS three, 7 / 2 AS seven_halves, -4 AS neg]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| contradiction_in_select_must_stay | `Project[sale_id, (amount = 10.0) AND (amount = 20.0) AS flag]` | 60.0 | 60 | 1.00 |
+| contradiction_in_select_must_stay | `Project[sale_id, amount = 10.0 AND amount = 20.0 AS flag]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount]]` | 60.0 | 60 | 1.00 |
 | noop_project_over_scan | `Scan[emp]` | 5.0 | 5 | 1.00 |
 | constant_conjuncts_in_join_and_scan | `Project[o_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id]]` | 12.0 | 12 | 1.00 |
-| null_and_in_select_must_stay | `Project[sale_id, (amount > 100.0) AND NULL AS flag]` | 60.0 | 60 | 1.00 |
+| null_and_in_select_must_stay | `Project[sale_id, amount > 100.0 AND None AS flag]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount]]` | 60.0 | 60 | 1.00 |
 | reordering_project_must_stay | `Project[name, id, dept_id, salary]` | 5.0 | 5 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[emp]` | 5.0 | 5 | 1.00 |
@@ -262,11 +280,11 @@ customers with no orders, which the containment assumption says do not exist, be
 
 | node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all nodes | 202 | 1.00 | 1.33 | 3.00 | 98% | 31 | 27 |
-| Project | 48 | 1.03 | 1.69 | 3.00 | 96% | 7 | 12 |
-| Scan | 78 | 1.00 | 1.00 | 1.04 | 100% | 0 | 0 |
-| Filter | 33 | 1.10 | 2.00 | 3.00 | 94% | 3 | 13 |
+| all nodes | 218 | 1.00 | 1.47 | 3.00 | 97% | 31 | 31 |
+| Project | 52 | 1.03 | 2.00 | 3.00 | 94% | 7 | 14 |
+| Scan | 82 | 1.00 | 1.00 | 1.04 | 100% | 0 | 0 |
+| Filter | 36 | 1.11 | 2.00 | 3.00 | 92% | 3 | 15 |
 | Limit | 3 | 1.00 | 1.00 | 1.00 | 100% | 0 | 0 |
-| Sort | 6 | 1.00 | 1.29 | 1.29 | 100% | 1 | 0 |
-| Aggregate | 11 | 1.00 | 1.25 | 1.25 | 100% | 2 | 0 |
+| Sort | 7 | 1.00 | 1.29 | 1.29 | 100% | 1 | 0 |
+| Aggregate | 15 | 1.00 | 1.25 | 1.25 | 100% | 2 | 0 |
 | Join | 23 | 1.29 | 1.29 | 1.33 | 100% | 18 | 2 |
