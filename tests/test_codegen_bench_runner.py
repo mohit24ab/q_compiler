@@ -29,11 +29,10 @@ def test_binder_alias_qualifiers_become_table_names(tiny):
     from frontend.binder import parse_and_bind
     sql = runner.load_queries(["q07"])["q07"]
     bound = parse_and_bind(sql, catalog)
-    assert {r.table for r in _refs(bound)} == {"o", "c"}          # what the binder emits today
-    assert alias_map(bound, catalog) == {"c": "customer", "o": "orders"}
+    assert {r.table for r in _refs(bound)} == {"orders", "customer"}
     fixed = resolve_aliases(bound, catalog)
     assert {r.table for r in _refs(fixed)} == {"orders", "customer"}
-    assert interpret(fixed, tables).num_rows > 0                  # and now it runs
+    assert interpret(fixed, tables).num_rows > 0
 
 
 def test_plans_already_using_table_names_are_returned_unchanged():

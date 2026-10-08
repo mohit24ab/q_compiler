@@ -396,85 +396,35 @@ def _execute_cached_plan(plan_id: int, tables: dict[str, Any]) -> QueryResult:
 
 
 def optimize(plan: PlanNode, catalog: Catalog) -> tuple[PlanNode, list[Any]]:
-    """Runs query optimization if Person B's optimizer is available, else passthrough."""
-    try:
-        import optimizer
-    except ModuleNotFoundError as e:
-        if e.name == "optimizer":
-            return plan, []
-        raise
-
+    """Runs query optimization using Person B's optimizer."""
+    import optimizer
     if hasattr(optimizer, "optimize"):
         return optimizer.optimize(plan, catalog)
-    return plan, []
+    raise RuntimeError("optimizer.optimize is not available in the compiler pipeline.")
 
 
 def interpret(plan: PlanNode, tables: dict[str, Any]) -> Any:
-    """Runs query interpretation using Person C's runtime if available, else naive reference."""
-    try:
-        import runtime.interpreter
-    except ModuleNotFoundError as e:
-        if e.name in ("runtime", "runtime.interpreter"):
-            cols, rows = naive_interpret(plan, tables)
-            return QueryResult(column_names=cols, rows=rows)
-        raise
-
+    """Runs query interpretation using Person C's runtime interpreter."""
+    import runtime.interpreter
     if hasattr(runtime.interpreter, "interpret"):
         return runtime.interpreter.interpret(plan, tables)
-    cols, rows = naive_interpret(plan, tables)
-    return QueryResult(column_names=cols, rows=rows)
+    raise RuntimeError("runtime.interpreter.interpret is not available in the compiler pipeline.")
 
 
 def generate(plan: PlanNode, catalog: Catalog | None = None) -> str:
-    """Generates executable module source using Person C's codegen if available, else fallback."""
-    try:
-        import codegen.generate
-    except ModuleNotFoundError as e:
-        if e.name in ("codegen", "codegen.generate"):
-            pid = next(_PLAN_COUNTER)
-            _CACHED_PLANS[pid] = plan
-            return (
-                f'"""Fallback generated query runner."""\n'
-                f"def run(tables):\n"
-                f"    from bench.harness import _execute_cached_plan\n"
-                f"    return _execute_cached_plan({pid}, tables)\n"
-            )
-        raise
-
+    """Generates executable module source using Person C's codegen."""
+    import codegen.generate
     if hasattr(codegen.generate, "generate"):
         return codegen.generate.generate(plan, catalog)
-
-    pid = next(_PLAN_COUNTER)
-    _CACHED_PLANS[pid] = plan
-    return (
-        f'"""Fallback generated query runner."""\n'
-        f"def run(tables):\n"
-        f"    from bench.harness import _execute_cached_plan\n"
-        f"    return _execute_cached_plan({pid}, tables)\n"
-    )
+    raise RuntimeError("codegen.generate.generate is not available in the compiler pipeline.")
 
 
 def compile_and_run(source: str, tables: dict[str, Any]) -> Any:
-    """Compiles and executes generated source module using Person C's runner or fallback."""
-    try:
-        import codegen.runner
-    except ModuleNotFoundError as e:
-        if e.name in ("codegen", "codegen.runner"):
-            codegen_runner = None
-        else:
-            raise
-    else:
-        codegen_runner = codegen.runner
-
-    if codegen_runner is not None and hasattr(codegen_runner, "compile_and_run"):
-        return codegen_runner.compile_and_run(source, tables)
-
-    namespace: dict[str, Any] = {}
-    code = compile(source, "<differential-generated>", "exec")
-    exec(code, namespace)
-    if "run" in namespace and callable(namespace["run"]):
-        return namespace["run"](tables)
-    raise RuntimeError("Generated source does not define a callable run(tables) function.")
+    """Compiles and executes generated source module using Person C's runner."""
+    import codegen.runner
+    if hasattr(codegen.runner, "compile_and_run"):
+        return codegen.runner.compile_and_run(source, tables)
+    raise RuntimeError("codegen.runner.compile_and_run is not available in the compiler pipeline.")
 
 
 def _has_order_by(plan: PlanNode, sql: str) -> bool:

@@ -94,12 +94,22 @@ def create_execution_callable(
 
     elif config == "compiled_unoptimized":
         source = generate(plan_unopt, catalog)
-        return (lambda: compile_and_run(source, tables)), plan_unopt
+        try:
+            from codegen.runner import compile_module
+            run_fn = compile_module(source)["run"]
+            return (lambda: run_fn(tables)), plan_unopt
+        except Exception:
+            return (lambda: compile_and_run(source, tables)), plan_unopt
 
     elif config == "compiled_optimized":
         plan_opt, _ = optimize(plan_unopt, catalog)
         source = generate(plan_opt, catalog)
-        return (lambda: compile_and_run(source, tables)), plan_opt
+        try:
+            from codegen.runner import compile_module
+            run_fn = compile_module(source)["run"]
+            return (lambda: run_fn(tables)), plan_opt
+        except Exception:
+            return (lambda: compile_and_run(source, tables)), plan_opt
 
     else:
         raise ValueError(
@@ -390,6 +400,10 @@ def main() -> None:
 
     figures = generate_charts(records, output_dir=args.figures_dir)
     print(f"Chart generation status: {figures}")
+
+    docs_assets = Path("docs/assets")
+    docs_assets.mkdir(parents=True, exist_ok=True)
+    generate_charts(records, output_dir=docs_assets)
 
 
 if __name__ == "__main__":

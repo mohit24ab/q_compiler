@@ -168,9 +168,12 @@ def run_demo(sql: str, scale: str = "tiny", runs: int = 3, max_rows: int = 15,
     plan = resolve_aliases(bound, catalog)
     p.section("Bound plan", "frontend.binder.parse_and_bind")
     p.block(format_plan(plan))
+    has_sql_aliases = any(f" {a} " in f" {sql} " for a in ("c", "o", "l", "p", "s"))
     if aliases:
         resolved = ", ".join(f"{a} {s.arrow} {t}" for a, t in aliases.items())
         p(s.dim(f"  (alias qualifiers resolved to table names: {resolved}; see bench/aliases.py)"))
+    elif has_sql_aliases:
+        p(s.dim(f"  (alias qualifiers resolved to table names; canonical table names used in bound plan)"))
 
     optimized, traces = optimize(plan, catalog)
     p.section("Optimized plan", opt_label)
