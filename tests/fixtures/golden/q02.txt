@@ -1,0 +1,5 @@
+Limit[n=20]
+  Sort[keys=lineitem.extended_price DESC]
+    Project[lineitem.id AS id, lineitem.order_id AS order_id, lineitem.quantity AS quantity, lineitem.extended_price AS extended_price, lineitem.extended_price * (1.0 - lineitem.discount) AS discounted_price]
+      Filter[lineitem.quantity > 10 AND lineitem.return_flag = 'R']
+        Scan[lineitem]

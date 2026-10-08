@@ -8,37 +8,68 @@ from ir.dtype import DType
 from ir.expr import AggCall, BinaryOp, ColumnRef, Expr, Literal, UnaryOp
 
 
-def _infer_expr_dtype(expr: Expr, child_schema: list[tuple[str, DType]]) -> DType:
+def _infer_expr_dtype(expr: Expr | None, child_schema: list[tuple[str, DType]]) -> DType:
     """Minimal structural type inference for Phase A1/A2 schema derivation."""
+    if expr is None:
+        return DType.STRING
+
     if isinstance(expr, ColumnRef):
-        for col_name, dtype in child_schema:
-            if col_name == expr.name or (expr.table and col_name == f"{expr.table}.{expr.name}"):
-                return dtype
-            if "." in col_name and col_name.split(".")[-1] == expr.name:
-                return dtype
+        if expr.table:
+            qualified_name = f"{expr.table}.{expr.name}"
+            for col_name, dtype in child_schema:
+                if col_name == qualified_name:
+                    return dtype
+            for col_name, dtype in child_schema:
+                if "." not in col_name and col_name == expr.name:
+                    return dtype
+        else:
+            for col_name, dtype in child_schema:
+                if col_name == expr.name:
+                    return dtype
+            for col_name, dtype in child_schema:
+                if "." in col_name and col_name.split(".")[-1] == expr.name:
+                    return dtype
         return DType.STRING
 
     if isinstance(expr, Literal):
-        return expr.dtype
+        if expr.dtype is not None:
+            return expr.dtype
+        return DType.STRING
 
     if isinstance(expr, BinaryOp):
-        if expr.op.upper() in ("=", "!=", "<", ">", "<=", ">=", "AND", "OR"):
+        op = expr.op.strip().upper()
+        if op in ("=", "!=", "<", ">", "<=", ">=", "AND", "OR"):
             return DType.BOOL
         left_dt = _infer_expr_dtype(expr.left, child_schema)
         right_dt = _infer_expr_dtype(expr.right, child_schema)
+
+        if op == "/":
+            return DType.FLOAT
+
+        if op in ("+", "-", "*", "%"):
+            if left_dt == DType.FLOAT or right_dt == DType.FLOAT:
+                return DType.FLOAT
+            if left_dt == DType.INT and right_dt == DType.INT:
+                return DType.INT
+            if left_dt == right_dt:
+                return left_dt
+            return DType.FLOAT
+
         if left_dt == right_dt:
             return left_dt
         return DType.FLOAT
 
     if isinstance(expr, UnaryOp):
-        if expr.op.upper() == "NOT":
+        op_norm = " ".join(expr.op.strip().upper().replace("_", " ").split())
+        if op_norm in ("NOT", "IS NULL", "IS NOT NULL"):
             return DType.BOOL
         return _infer_expr_dtype(expr.operand, child_schema)
 
     if isinstance(expr, AggCall):
-        if expr.func == "count":
+        func = expr.func.lower()
+        if func == "count":
             return DType.INT
-        if expr.func == "avg":
+        if func == "avg":
             return DType.FLOAT
         if expr.arg is not None:
             return _infer_expr_dtype(expr.arg, child_schema)
