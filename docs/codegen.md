@@ -44,9 +44,11 @@ The semantics are copied from `runtime/expr_eval.py`, the interpreter, which is 
 * sorting is stable with NULLs last in both directions;
 * join output is left-row order, then right-row order;
 * an aggregate (or any expression) named above the operator that computed it means that
-  operator's result, also through a Project that renamed it: the binder writes
-  `ORDER BY SUM(x)` as `Sort[sum(x)]` above `Project[..., total]`, and the Sort reads
-  `total` (`runtime.expr_eval.project_expr_columns`, shared by both engines).
+  operator's result (`docs/ir-reference.md`, Filter and Sort), also through a Project
+  that renamed it: `Sort[sum(x)]` above `Project[..., total]` sorts on `total`
+  (`runtime.expr_eval.project_expr_columns`, shared by both engines). Since main @
+  0993653 the binder itself writes `ORDER BY SUM(x)` as `Sort[total]`; plans built
+  another way (by hand, by a pass) still get the rule.
 
 When generated code fails, `compile_and_run` raises `GeneratedCodeError` with the numbered
 source and a `-->` on the failing line (the innermost generated frame, even when the

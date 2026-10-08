@@ -103,20 +103,25 @@ def test_order_by_an_aggregate_the_project_renamed():
 
 def test_order_by_aggregate_through_the_binder_matches_order_by_alias():
     """`ORDER BY SUM(x)` and `ORDER BY total` (its alias) are the same query, unoptimized,
-    in both engines, fused or not. The binder puts the Sort above the Project for both."""
+    in both engines, fused or not, whatever shape the binder gives it (since main @ 0993653
+    it rewrites the key to the alias, or to a hidden aggregate when SUM(x) isn't selected)."""
     from bench import runner
     from frontend.binder import parse_and_bind
     catalog, tables = runner.load_data("tiny", 42)
     head = "SELECT nation, SUM(acctbal) AS total, COUNT(*) AS n FROM customer GROUP BY nation"
     by_alias = interpret(parse_and_bind(f"{head} ORDER BY total DESC, nation", catalog), tables)
-    for order_by in ("SUM(acctbal) DESC, nation", "SUM(acctbal) * -1, nation"):
-        plan = parse_and_bind(f"{head} ORDER BY {order_by}", catalog)
+    cases = [(f"{head} ORDER BY SUM(acctbal) DESC, nation", by_alias),
+             (f"{head} ORDER BY SUM(acctbal) * -1, nation", by_alias),
+             ("SELECT nation FROM customer GROUP BY nation ORDER BY SUM(acctbal) DESC, nation",
+              by_alias.select(["nation"]))]
+    for sql, expected in cases:
+        plan = parse_and_bind(sql, catalog)
         results = [interpret(plan, tables)] + [
             compile_and_run(generate(plan, catalog, mode="compiled", fuse=f), tables)
             for f in (True, False)]
         for got in results:
-            ok, why = compare_tables(by_alias, got, ordered=True)
-            assert ok, f"ORDER BY {order_by}: {why}"
+            ok, why = compare_tables(expected, got, ordered=True)
+            assert ok, f"{sql}: {why}"
 
 
 def test_limit_edges():
