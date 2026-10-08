@@ -1,0 +1,4 @@
+Project[part.mfgr AS mfgr, part.brand AS brand, part_count, min_price, max_price, avg_price]
+  Filter[avg(part.retail_price) > 1000.0 AND count(*) >= 2]
+    Aggregate[group=part.mfgr, part.brand, aggs=count(*) AS part_count, min(part.retail_price) AS min_price, max(part.retail_price) AS max_price, avg(part.retail_price) AS avg_price]
+      Scan[part]
