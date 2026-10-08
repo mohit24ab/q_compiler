@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 from runtime.expr_eval import (
     InterpreterError, Scope, _norm, agg_result_dtype, evaluate, expr_key, infer_dtype,
-    is_true, node_kind, render_expr,
+    is_true, node_kind, project_expr_columns, render_expr,
 )
 from runtime.table import Table, find_columns
 
@@ -99,7 +99,8 @@ class _Interpreter:
             fields.append((alias, infer_dtype(expr, scope), qualifier))
         rows = [tuple(evaluate(e, row, scope) for e, _ in node.exprs)
                 for row in rel.table.to_rows()]
-        return _Rel(Table.from_rows(fields, rows))
+        return _Rel(Table.from_rows(fields, rows),
+                    project_expr_columns(node.exprs, scope.index_of, rel.expr_columns))
 
     # ------------------------------------------------------------------ Join
     def _join(self, node) -> _Rel:

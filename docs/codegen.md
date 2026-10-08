@@ -42,7 +42,11 @@ The semantics are copied from `runtime/expr_eval.py`, the interpreter, which is 
   a global aggregate over no rows still returns one row;
 * NULL group keys form one group; groups come out in first-seen order;
 * sorting is stable with NULLs last in both directions;
-* join output is left-row order, then right-row order.
+* join output is left-row order, then right-row order;
+* an aggregate (or any expression) named above the operator that computed it means that
+  operator's result, also through a Project that renamed it: the binder writes
+  `ORDER BY SUM(x)` as `Sort[sum(x)]` above `Project[..., total]`, and the Sort reads
+  `total` (`runtime.expr_eval.project_expr_columns`, shared by both engines).
 
 When generated code fails, `compile_and_run` raises `GeneratedCodeError` with the numbered
 source and a `-->` on the failing line (the innermost generated frame, even when the
@@ -301,15 +305,15 @@ The CSV starts with Person A's columns (`bench/report.py: CSV_COLUMNS`), so
 `bench.report.generate_charts("bench/results/runner_bench.csv")` draws it unchanged. A
 Markdown summary is written next to it.
 
-Two things the runner needed from outside codegen, both temporary:
+Two things the runner needed from outside codegen:
 
-* `bench/aliases.py`. The binder emits alias qualifiers (`o.cust_id`) under
-  `Scan[orders]`, which nothing downstream can resolve. That affects 9 of the 20
-  queries (every join). `resolve_aliases` maps each alias to the one scanned table whose schema has
-  every column used with it, and refuses to guess otherwise. It is a no-op once the
-  binder emits table names.
+* `bench/aliases.py`. Until main @ a9a3048 the binder emitted alias qualifiers
+  (`o.cust_id`) under `Scan[orders]`, which nothing downstream could resolve; that
+  affected 9 of the 20 queries (every join). `resolve_aliases` maps each alias to the
+  one scanned table whose schema has every column used with it, and refuses to guess
+  otherwise. The binder now emits table names, so it is a no-op, kept as a guard.
 * The interpreter's joins. The C1 interpreter tried every left x right pair, which is
-  2.5 billion pairs for lineitem x orders at bench scale. Equality conjuncts now build a
+  2.5 billion pairs for lineitem x orders at 100,000 lineitem rows. Equality conjuncts now build a
   hash index that only supplies candidate rows. The full condition is still evaluated
   on every candidate, and output order is unchanged (tests compare it with the all-pairs
   loop row for row). Without this, "interpreted vs compiled" would have measured
@@ -317,8 +321,9 @@ Two things the runner needed from outside codegen, both temporary:
 
 ### Results at bench scale
 
-100,000 lineitem / 25,000 orders / 5,000 customer and part rows, with Person B's optimizer
-(`b/phase-7-ablation`, not on main yet). All 120 measurements give the reference answer.
+100,000 lineitem / 25,000 orders / 5,000 customer and part rows (the `bench` scale until
+main @ f82491a raised it to 1,000,000 lineitem rows), with Person B's optimizer
+(`b/phase-7-ablation` @ dfadf15). All 120 measurements give the reference answer.
 Full table: [`bench/results/runner_bench.md`](../bench/results/runner_bench.md); raw
 numbers: `bench/results/runner_bench.csv`.
 
@@ -371,8 +376,8 @@ python demo.py --list
 One query, through every stage, in order:
 
 1. the SQL;
-2. the bound plan (`frontend.binder.parse_and_bind`), with a note if alias qualifiers had
-   to be resolved (`bench/aliases.py`);
+2. the bound plan (`frontend.binder.parse_and_bind`), with a note listing the SQL's table
+   aliases (`c -> customer`) that the binder resolved to table names;
 3. the optimized plan (`optimizer.optimize`, or the identity when it isn't available,
    which the heading says);
 4. what each optimizer pass changed (Person B's `render_traces`, as coloured diffs);

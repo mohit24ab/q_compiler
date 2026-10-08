@@ -1,7 +1,11 @@
-"""Temporary bridge: rewrite alias-qualified column references to table-qualified ones.
+"""Bridge: rewrite alias-qualified column references to table-qualified ones.
+
+Since main @ a9a3048 the binder resolves aliases itself, and this is a no-op on every
+plan it produces; the runner and demo keep calling it as a guard, so that alias
+qualifiers, should they come back, are resolved or rejected rather than run.
 
 For `FROM orders o JOIN customer c ON o.cust_id = c.id`, the binder (frontend/binder.py)
-currently emits `ColumnRef(table="o", name="cust_id")` under a `Scan(table="orders")`.
+used to emit `ColumnRef(table="o", name="cust_id")` under a `Scan(table="orders")`.
 The IR has no alias field on Scan, so nothing downstream can tell that `o` means
 `orders`: the interpreter and the generated code fail with "unknown column 'o.cust_id'",
 and an optimizer can't tell which join input a predicate belongs to. 9 of the 20 golden

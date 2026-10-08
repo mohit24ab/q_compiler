@@ -48,6 +48,26 @@ def expr_key(expr) -> str:
     return repr(expr)
 
 
+def project_expr_columns(exprs, index_of, expr_columns: dict[str, int]) -> dict[str, int]:
+    """The already-computed expressions a Project's output still holds, by output position.
+
+    Output column i holds expression e, written over the Project's input. A computed e
+    is held as itself. A plain column also carries whatever expression the input had
+    computed into it, so an Aggregate's sum(x) renamed `total` is still sum(x) to the
+    operators above: `SELECT sum(x) AS total ... ORDER BY sum(x)` sorts on `total`.
+    """
+    out: dict[str, int] = {}
+    for i, (expr, _alias) in enumerate(exprs):
+        if node_kind(expr) == "ColumnRef":
+            src = index_of(expr)
+            for key, j in expr_columns.items():
+                if j == src:
+                    out.setdefault(key, i)
+        else:
+            out.setdefault(expr_key(expr), i)
+    return out
+
+
 def render_expr(expr) -> str:
     """SQL-ish text for an expression; used for auto-generated column names."""
     kind = node_kind(expr)
