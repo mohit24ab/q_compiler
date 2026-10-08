@@ -220,8 +220,8 @@ def test_cost_prefers_joining_the_filtered_table_first():
     cn = op("=", col("c_nationkey"), col("n_id"))
     late = join(join(orders, customer, oc), nation, cn)   # (orders ⋈ customer) ⋈ nation
     early = join(orders, join(customer, nation, cn), oc)  # orders ⋈ (customer ⋈ nation)
-    # the same result rows either way (to within the estimator's order-dependence)
-    assert estimate_rows(late, S.CATALOG) == pytest.approx(estimate_rows(early, S.CATALOG), rel=0.15)
+    # the same result rows either way
+    assert estimate_rows(late, S.CATALOG) == pytest.approx(estimate_rows(early, S.CATALOG))
     assert plan_cost(early, S.CATALOG) < plan_cost(late, S.CATALOG)
 
 

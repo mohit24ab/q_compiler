@@ -57,36 +57,36 @@ actual 3 is a q-error of 3.
 
 | node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all nodes | 181 | 1.00 | 1.54 | 3.00 | 96% | 32 | 27 |
-| Scan | 82 | 1.00 | 1.33 | 1.60 | 100% | 1 | 9 |
-| Project | 34 | 1.25 | 2.20 | 3.00 | 88% | 11 | 9 |
+| all nodes | 290 | 1.00 | 1.90 | 6.06 | 93% | 65 | 43 |
+| Scan | 126 | 1.00 | 1.20 | 1.60 | 100% | 1 | 12 |
+| Project | 63 | 1.29 | 2.25 | 6.06 | 84% | 26 | 15 |
 | Limit | 2 | 1.00 | 1.00 | 1.00 | 100% | 0 | 0 |
 | Sort | 7 | 1.00 | 1.29 | 1.29 | 100% | 2 | 0 |
-| Aggregate | 15 | 1.00 | 1.25 | 1.25 | 100% | 2 | 0 |
+| Aggregate | 17 | 1.00 | 1.33 | 1.41 | 100% | 4 | 0 |
 | Filter | 18 | 1.00 | 3.00 | 3.00 | 83% | 1 | 6 |
-| Join | 23 | 1.29 | 1.55 | 2.20 | 96% | 15 | 3 |
+| Join | 57 | 1.29 | 2.20 | 6.06 | 88% | 31 | 10 |
 
-96% of the 181 nodes are within 2x. The worst ten:
+93% of the 290 nodes are within 2x. The worst ten:
 
 | query | node | estimated | actual | q-error |
 |---|---|--:|--:|--:|
+| five_way_join_in_a_bad_order | `Project[l_id, c_name]` | 30.3 | 5 | 6.06 |
+|  | `Join[kind=inner, cond=l_orderkey = o_id]` | 30.3 | 5 | 6.06 |
 | having_on_aggregate | `Project[region]` | 1.3 | 4 | 3.00 |
 |  | `Filter[total > 1000.0]` | 1.3 | 4 | 3.00 |
 | left_join_is_null_must_not_push | `Project[customer.c_name AS c_name]` | 1.0 | 3 | 3.00 |
 |  | `Filter[orders.o_id IS NULL]` | 1.0 | 3 | 3.00 |
-| having_names_an_aggregate_the_select_list_drops | `Project[sales.region AS region]` | 1.3 | 3 | 2.25 |
-|  | `Filter[count(*) > 12]` | 1.3 | 3 | 2.25 |
-| filter_through_project_over_join | `Project[orders.o_id AS oid, customer.c_segment AS seg]` | 11.0 | 5 | 2.20 |
-|  | `Join[kind=inner, cond=orders.o_custkey = customer.c_id]` | 11.0 | 5 | 2.20 |
-| having_splits_on_group_key | `Filter[total > 1500.0]` | 1.0 | 2 | 2.00 |
-| having_mixes_an_aggregate_and_a_group_key | `Project[region]` | 1.0 | 2 | 2.00 |
+| five_way_join_in_a_bad_order | `Project[orders.o_id AS o_id, c_name]` | 13.6 | 5 | 2.73 |
+|  | `Join[kind=inner, cond=o_custkey = c_id]` | 13.6 | 5 | 2.73 |
+| forced_cross_product | `Project[emp.name AS emp_name, n_name]` | 2.6 | 6 | 2.30 |
+|  | `Join[kind=inner, cond=True]` | 2.6 | 6 | 2.30 |
 
-Three causes recur. The HAVING queries filter on an aggregate result (a SUM or COUNT),
-which has no statistics, so it gets System R's 1/3. `left_join_is_null_must_not_push` counts
-customers with no orders, which the containment assumption says do not exist, because
-`orders.o_custkey` and `customer.c_id` have the same number of distinct values. And
-`filter_through_project_over_join` is containment again: `orders.o_custkey` includes the
-keys 13 and 14, which no customer has.
+Every node in that list returns 6 rows or fewer. Why each query is off:
+
+* `five_way_join_in_a_bad_order`: four joins, each a little off, and the errors multiply.
+* `having_on_aggregate`: the HAVING predicate reads a SUM, which has no statistics, so it gets System R's 1/3.
+* `left_join_is_null_must_not_push`: it counts customers with no orders, which containment says do not exist: `orders.o_custkey` and `customer.c_id` have the same number of distinct values, but not the same values.
+* `forced_cross_product`: a cross product multiplies the errors of its inputs: two of the five nations are in AMERICA (1.25 expected), and three employees work in a department with a budget over 500 (2.1 expected).
 
 <details><summary>Every node of every query</summary>
 
@@ -138,18 +138,18 @@ keys 13 and 14, which no customer has.
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[emp, columns=[name, dept_id]]` | 5.0 | 5 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[dept, columns=[id, name]]` | 3.0 | 3 | 1.00 |
 | three_way_join_unqualified | `Aggregate[group=n_name, aggs=sum(o_total) AS revenue]` | 5.0 | 4 | 1.25 |
-|  | &nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[orders.o_total AS o_total, customer.c_nationkey AS c_nationkey]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id, nation.n_name AS n_name]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey]]` | 12.0 | 12 | 1.00 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_name]]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_name]]` | 5.0 | 5 | 1.00 |
 | three_way_join_qualified | `Aggregate[group=nation.n_name, aggs=sum(orders.o_total) AS revenue]` | 5.0 | 4 | 1.25 |
-|  | &nbsp;&nbsp;`Join[kind=inner, cond=customer.c_nationkey = nation.n_id]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=orders.o_custkey = customer.c_id]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=orders.o_custkey = customer.c_id]` | 40.0 | 31 | 1.29 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=customer.c_nationkey = nation.n_id]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey]]` | 12.0 | 12 | 1.00 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_name]]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_name]]` | 5.0 | 5 | 1.00 |
 | filter_over_join_unqualified | `Project[o_id]` | 14.5 | 15 | 1.03 |
 |  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 14.5 | 15 | 1.03 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
@@ -177,13 +177,13 @@ keys 13 and 14, which no customer has.
 |  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 13.3 | 14 | 1.05 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey], pushed=o_status = 'F']` | 13.3 | 20 | 1.50 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id], pushed=c_balance > 0.0]` | 10.6 | 11 | 1.04 |
-| filter_through_three_way_join | `Project[o_id]` | 12.5 | 20 | 1.60 |
-|  | &nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 12.5 | 20 | 1.60 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[orders.o_id AS o_id, customer.c_nationkey AS c_nationkey]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
+| filter_through_three_way_join | `Project[o_id]` | 13.6 | 20 | 1.47 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 13.6 | 20 | 1.47 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id]` | 3.8 | 8 | 2.13 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 3.8 | 8 | 2.13 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey]]` | 12.0 | 12 | 1.00 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id], pushed=n_region = 'AMERICA']` | 1.2 | 2 | 1.60 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id], pushed=n_region = 'AMERICA']` | 1.2 | 2 | 1.60 |
 | left_join_where_on_preserved_side | `Project[c_name, o_total]` | 14.5 | 15 | 1.03 |
 |  | &nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey]` | 14.5 | 15 | 1.03 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name], pushed=c_segment = 'AUTO']` | 4.0 | 4 | 1.00 |
@@ -273,6 +273,115 @@ keys 13 and 14, which no customer has.
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount]]` | 60.0 | 60 | 1.00 |
 | reordering_project_must_stay | `Project[name, id, dept_id, salary]` | 5.0 | 5 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[emp]` | 5.0 | 5 | 1.00 |
+| five_way_join_in_a_bad_order | `Project[l_id, c_name]` | 30.3 | 5 | 6.06 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=l_orderkey = o_id]` | 30.3 | 5 | 6.06 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[lineitem, columns=[l_id, l_orderkey]]` | 80.0 | 80 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[orders.o_id AS o_id, c_name]` | 13.6 | 5 | 2.73 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 13.6 | 5 | 2.73 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id, customer.c_name AS c_name]` | 3.8 | 2 | 1.88 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 3.8 | 2 | 1.88 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name, c_nationkey]]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[nation.n_id AS n_id]` | 1.2 | 1 | 1.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=n_region = r_name]` | 1.2 | 1 | 1.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_region]]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[region, columns=[r_name], pushed=r_name = 'ASIA']` | 1.0 | 1 | 1.00 |
+| comma_join_with_a_cross_product | `Project[o_id, n_name]` | 40.0 | 31 | 1.29 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id, nation.n_name AS n_name]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey]]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_name]]` | 5.0 | 5 | 1.00 |
+| forced_cross_product | `Project[emp.name AS emp_name, n_name]` | 2.6 | 6 | 2.30 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=True]` | 2.6 | 6 | 2.30 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_name], pushed=n_region = 'AMERICA']` | 1.2 | 2 | 1.60 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=emp.dept_id = dept.id]` | 2.1 | 3 | 1.44 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[emp, columns=[name, dept_id]]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[dept, columns=[id], pushed=dept.budget > 500.0]` | 1.7 | 2 | 1.20 |
+| three_relation_conjunct | `Project[o_id]` | 13.3 | 7 | 1.90 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id AND o_total > c_balance + n_id * 100.0]` | 13.3 | 7 | 1.90 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id, customer.c_balance AS c_balance, nation.n_id AS n_id]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey, c_balance]]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id]]` | 5.0 | 5 | 1.00 |
+| join_region_under_aggregate | `Aggregate[group=r_name, aggs=sum(l_price) AS revenue]` | 4.0 | 3 | 1.33 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=l_orderkey = o_id]` | 29.6 | 28 | 1.06 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[lineitem, columns=[l_orderkey, l_price]]` | 80.0 | 80 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[orders.o_id AS o_id, r_name]` | 13.3 | 16 | 1.20 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 13.3 | 16 | 1.20 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey], pushed=o_status = 'F']` | 13.3 | 20 | 1.50 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id, r_name]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey]]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[nation.n_id AS n_id, region.r_name AS r_name]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=n_region = r_name]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_region]]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[region, columns=[r_name]]` | 5.0 | 5 | 1.00 |
+| join_region_inside_left_join | `Project[r_name, c_name, o_id]` | 41.0 | 33 | 1.24 |
+|  | &nbsp;&nbsp;`Join[kind=left, cond=r_name = n_region]` | 41.0 | 33 | 1.24 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[region, columns=[r_name]]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[orders.o_id AS o_id, c_name, n_region]` | 40.0 | 31 | 1.29 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id, customer.c_name AS c_name, nation.n_region AS n_region]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name, c_nationkey]]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_region]]` | 5.0 | 5 | 1.00 |
+| left_join_inside_join_region | `Project[c_name, o_id, n_name, r_comment]` | 41.0 | 34 | 1.21 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 41.0 | 34 | 1.21 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_name AS c_name, customer.c_nationkey AS c_nationkey, orders.o_id AS o_id]` | 41.0 | 34 | 1.21 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey]` | 41.0 | 34 | 1.21 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name, c_nationkey]]` | 12.0 | 12 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[nation.n_id AS n_id, nation.n_name AS n_name, region.r_comment AS r_comment]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=n_region = r_name]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[region]` | 5.0 | 5 | 1.00 |
+| nested_join_regions | `Project[n_name, revenue]` | 1.2 | 2 | 1.60 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 1.2 | 2 | 1.60 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=c_nationkey, aggs=sum(l_price) AS revenue]` | 2.8 | 2 | 1.41 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=l_orderkey = o_id]` | 32.3 | 25 | 1.29 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[lineitem, columns=[l_orderkey, l_price]]` | 80.0 | 80 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[orders.o_id AS o_id, customer.c_nationkey AS c_nationkey]` | 14.5 | 15 | 1.03 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 14.5 | 15 | 1.03 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey], pushed=c_segment = 'AUTO']` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[nation.n_id AS n_id, nation.n_name AS n_name]` | 1.2 | 2 | 1.60 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=n_region = r_name]` | 1.2 | 2 | 1.60 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation]` | 5.0 | 5 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[region, columns=[r_name], pushed=r_name = 'AMERICA']` | 1.0 | 1 | 1.00 |
+| nine_way_chain | `Project[k1_id, k9_next]` | 6.0 | 3 | 2.00 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=k1_next = k2_id]` | 6.0 | 3 | 2.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[k1]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[k2.k2_id AS k2_id, k9_next]` | 6.0 | 3 | 2.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=k2_next = k3_id]` | 6.0 | 3 | 2.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k2]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[k3.k3_id AS k3_id, k9_next]` | 6.0 | 4 | 1.50 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=k3_next = k4_id]` | 6.0 | 4 | 1.50 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k3]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[k4.k4_id AS k4_id, k9_next]` | 6.0 | 5 | 1.20 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=k4_next = k5_id]` | 6.0 | 5 | 1.20 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k4]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[k5.k5_id AS k5_id, k9_next]` | 6.0 | 4 | 1.50 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=k5_next = k6_id]` | 6.0 | 4 | 1.50 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k5]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[k6.k6_id AS k6_id, k9_next]` | 4.5 | 2 | 2.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=k6_next = k7_id]` | 4.5 | 2 | 2.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k6]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[k7.k7_id AS k7_id, k9_next]` | 2.2 | 1 | 2.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=k7_next = k8_id]` | 2.2 | 1 | 2.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k7]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Project[k8.k8_id AS k8_id, k9.k9_next AS k9_next]` | 1.5 | 2 | 1.33 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=k8_next = k9_id]` | 1.5 | 2 | 1.33 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k8]` | 6.0 | 6 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[k9, pushed=k9_id = 2]` | 1.0 | 1 | 1.00 |
+| join_output_order_is_the_result | `Join[kind=inner, cond=o_custkey = c_id]` | 29.1 | 25 | 1.16 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=l_orderkey = o_id]` | 80.0 | 77 | 1.04 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[lineitem]` | 80.0 | 80 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders]` | 40.0 | 40 | 1.00 |
+|  | &nbsp;&nbsp;`Scan[customer, pushed=c_segment = 'AUTO']` | 4.0 | 4 | 1.00 |
 
 </details>
 
@@ -280,11 +389,11 @@ keys 13 and 14, which no customer has.
 
 | node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all nodes | 218 | 1.00 | 1.47 | 3.00 | 97% | 31 | 31 |
-| Project | 52 | 1.03 | 2.00 | 3.00 | 94% | 7 | 14 |
-| Scan | 82 | 1.00 | 1.00 | 1.04 | 100% | 0 | 0 |
-| Filter | 36 | 1.11 | 2.00 | 3.00 | 92% | 3 | 15 |
+| all nodes | 315 | 1.00 | 1.50 | 4.00 | 97% | 59 | 37 |
+| Project | 60 | 1.08 | 2.00 | 4.00 | 92% | 12 | 17 |
+| Scan | 126 | 1.00 | 1.00 | 1.04 | 100% | 0 | 0 |
+| Filter | 45 | 1.12 | 2.25 | 4.00 | 89% | 6 | 18 |
 | Limit | 3 | 1.00 | 1.00 | 1.00 | 100% | 0 | 0 |
 | Sort | 7 | 1.00 | 1.29 | 1.29 | 100% | 1 | 0 |
-| Aggregate | 15 | 1.00 | 1.25 | 1.25 | 100% | 2 | 0 |
-| Join | 23 | 1.29 | 1.29 | 1.33 | 100% | 18 | 2 |
+| Aggregate | 17 | 1.00 | 1.33 | 2.00 | 100% | 4 | 0 |
+| Join | 57 | 1.24 | 1.43 | 2.00 | 100% | 36 | 2 |

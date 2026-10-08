@@ -60,7 +60,7 @@ from typing import Any
 from ir.expr import ColumnRef
 from ir.nodes import Aggregate, Filter, Join, Project, Scan, Sort
 
-from optimizer.columns import Ref, agg_calls, column_refs, output_columns, table_schema
+from optimizer.columns import Ref, agg_calls, column_refs, output_columns, resolves, table_schema
 from optimizer.expressions import TRUE, can_be_true, conjoin, rebuild, split_conjuncts, substitute
 
 LEFT, RIGHT = "L", "R"
@@ -153,7 +153,7 @@ class _Pusher:
         if node.kind == "left" and rcols is not None and lcols is not None:
             def right_only(ref: ColumnRef) -> bool:
                 r = (ref.table, ref.name)
-                return any(_resolves(r, c) for c in rcols) and not any(_resolves(r, c) for c in lcols)
+                return any(resolves(r, c) for c in rcols) and not any(resolves(r, c) for c in lcols)
 
             if any(not can_be_true(p, right_only) for p in preds):
                 node = dataclasses.replace(node, kind="inner")
@@ -192,18 +192,12 @@ def _sides(pred: Any, lcols: list[Ref] | None, rcols: list[Ref] | None) -> set[s
         return None
     sides = set()
     for ref in column_refs(pred):
-        in_left = any(_resolves(ref, c) for c in lcols)
-        in_right = any(_resolves(ref, c) for c in rcols)
+        in_left = any(resolves(ref, c) for c in lcols)
+        in_right = any(resolves(ref, c) for c in rcols)
         if in_left == in_right:  # ambiguous, or not found on either side
             return None
         sides.add(LEFT if in_left else RIGHT)
     return sides
-
-
-def _resolves(ref: Ref, column: Ref) -> bool:
-    """Apply strict name resolution, the same rule as the reference evaluator."""
-    (rq, rn), (cq, cn) = ref, column
-    return rn == cn and (rq is None or rq == cq)
 
 
 def _partition(items: list[Any], keep_left) -> tuple[list[Any], list[Any]]:

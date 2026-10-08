@@ -421,7 +421,8 @@ def test_estimates_are_consistent(name, plan, catalog):
         assert math.isfinite(e.rows) and e.rows >= 0, node
         for _, c in e.columns:
             assert 0.0 <= c.null_frac <= 1.0 + 1e-9, node
-            assert c.ndv is None or c.ndv <= e.rows + 1e-9, node
+            if not isinstance(node, Join):  # a join keeps each column's full ndv
+                assert c.ndv is None or c.ndv <= e.rows + 1e-9, node
         kids = [est.rows(child) for child in node.children]
         if isinstance(node, Scan):
             assert e.rows <= catalog.row_count(node.table) + 1e-9

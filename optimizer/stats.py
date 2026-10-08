@@ -50,9 +50,13 @@ Row counts per node:
 Column statistics flow upward with the rows: a Filter on x = 5 leaves x
 with ndv 1 and min = max = 5; a range narrows min and max and scales ndv;
 any comparison on x removes x's NULLs; the right side of a LEFT join gains
-NULLs for unmatched rows; join keys get min(ndv_a, ndv_b) (containment);
-and no column ever has more distinct values than its node has rows. A
-column a Filter does not constrain keeps each of its values with the chance
+NULLs for unmatched rows; join keys get min(ndv_a, ndv_b) (containment).
+Below a join, no column has more distinct values than its node has rows.
+A join's output does not cap ndv that way: a later join's selectivity
+depends on the values a column draws from, not on how many happen to be
+present, and without the cap the estimate for a set of joined relations is
+the same in every join order, which the join reordering's dynamic program
+relies on. A column a Filter does not constrain keeps each of its values with the chance
 that at least one of the value's rows survives (Cardenas' urn model):
 ndv' = ndv * (1 - (1 - sel) ** (rows / ndv)).
 
@@ -238,8 +242,13 @@ class CardinalityEstimator:
         conjuncts = [] if node.condition is None else split_conjuncts(fold(node.condition))
         inner = left.rows * right.rows * _clamp(self._and(conjuncts, scope))
         narrowed = self._narrow(scope, conjuncts)
+        # Join outputs keep each column's ndv uncapped by the row count (the
+        # values the column draws from, not the values present). That keeps a
+        # later join's selectivity right, and makes the estimate for a set of
+        # joined relations the same whatever order they were joined in.
+        # Aggregate caps its group count by its input rows itself.
         if node.kind != "left":
-            return Estimate(inner, _cap(narrowed, inner))
+            return Estimate(inner, tuple(narrowed))
         # LEFT: the condition never removes a left row. A left row with no match
         # appears once, NULL-extended.
         unmatched = left.rows * (1.0 - self._matched_fraction(left, right, conjuncts, inner))
@@ -248,7 +257,7 @@ class CardinalityEstimator:
         for ref, c in narrowed[len(left.columns):]:
             nulls = (inner * c.null_frac + unmatched) / rows if rows else c.null_frac
             padded.append((ref, dataclasses.replace(c, null_frac=nulls)))
-        return Estimate(rows, _cap(list(left.columns) + padded, rows))
+        return Estimate(rows, tuple(list(left.columns) + padded))
 
     def _matched_fraction(self, left: Estimate, right: Estimate, conjuncts, inner: float) -> float:
         """The fraction of left rows that find at least one match.

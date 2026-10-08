@@ -27,11 +27,16 @@ def default_passes() -> list[OptimizerPass]:
     # while the framework itself (manager, traces) must work without it.
     from optimizer.column_pruning import ColumnPruning
     from optimizer.constant_folding import ConstantFolding
+    from optimizer.join_reordering import JoinReordering
     from optimizer.predicate_pushdown import PredicatePushdown
 
     # Folding first: a simplified predicate exposes more conjuncts to push.
-    # Pushdown before pruning: moving a filter changes which columns each node needs.
-    return [ConstantFolding(), PredicatePushdown(), ColumnPruning()]
+    # Pushdown before reordering: filters at the scans make the estimates the
+    # reordering is costed from reflect them, and WHERE conjuncts become join
+    # conditions it can place.
+    # Reordering before pruning: pruning inserts Projects between joins, which
+    # would split the join trees reordering works on.
+    return [ConstantFolding(), PredicatePushdown(), JoinReordering(), ColumnPruning()]
 
 
 def optimize(plan: Any, catalog: Any) -> tuple[Any, list[PassTrace]]:
