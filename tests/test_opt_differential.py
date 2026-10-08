@@ -6,7 +6,7 @@ evaluator. Add each new pass to the default pipeline and this file covers it
 with no edits.
 
 The negative controls at the bottom show that this harness actually
-catches the classic pruning and pushdown bugs, rather than passing everything.
+catches the classic pruning, pushdown and folding bugs, rather than passing everything.
 """
 
 import dataclasses
@@ -21,6 +21,7 @@ from ir.nodes import Filter, Join, Project, Scan
 from opt_query_suite import CATALOG, TABLES, col, is_null, keep, op, project
 from opt_reference_eval import assert_equivalent
 from optimizer.column_pruning import ColumnPruning
+from optimizer.constant_folding import FALSE
 from optimizer.expressions import split_conjuncts
 
 
@@ -130,5 +131,31 @@ def test_harness_catches_left_join_wrongly_made_inner():
     j = f.child
     illegal = project(dataclasses.replace(j, kind="inner", condition=op("AND", j.condition, f.predicate)),
                       *keep("c_name", "o_total"))
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
+
+
+# Constant folding: the rewrites it must NOT make would change the answer.
+
+
+def test_harness_catches_emptiness_lifted_through_a_global_aggregate():
+    plan = S.global_aggregate_over_empty_must_not_lift()  # one row: (0, NULL)
+    illegal = Filter(child=dataclasses.replace(plan, child=plan.child.child), predicate=FALSE)
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
+
+
+def test_harness_catches_emptiness_lifted_through_a_left_join_right_side():
+    plan = S.empty_right_side_of_left_join_must_not_lift()
+    j = plan.child
+    illegal = project(Filter(child=dataclasses.replace(j, right=j.right.child), predicate=FALSE),
+                      *keep("c_name", "o_total"))
+    with pytest.raises(AssertionError, match="rows differ"):
+        assert_equivalent(plan, illegal, TABLES)
+
+
+def test_harness_catches_a_contradiction_folded_to_false_in_a_select():
+    plan = S.contradiction_in_select_must_stay()  # NULL, not FALSE, where amount is NULL
+    illegal = dataclasses.replace(plan, exprs=[plan.exprs[0], (FALSE, "flag")])
     with pytest.raises(AssertionError, match="rows differ"):
         assert_equivalent(plan, illegal, TABLES)

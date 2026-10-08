@@ -169,7 +169,7 @@ def _eval(expr, columns: list[Column], row: tuple, computed: dict[str, int] | No
         return expr.value
     if isinstance(expr, UnaryOp):
         value = _eval(expr.operand, columns, row, computed)
-        op = expr.op.upper()
+        op = expr.op.upper().replace("_", " ")
         if op == "NOT":
             return None if value is None else not value
         if op == "-":
@@ -180,7 +180,7 @@ def _eval(expr, columns: list[Column], row: tuple, computed: dict[str, int] | No
             return value is not None
         raise ValueError(f"unknown unary operator {expr.op!r}")
     if isinstance(expr, BinaryOp):
-        op = expr.op.upper()
+        op = expr.op.upper().replace("_", " ")
         left = _eval(expr.left, columns, row, computed)
         right = _eval(expr.right, columns, row, computed)
         if op == "AND":
@@ -219,12 +219,20 @@ def _normalise(rows: list[tuple]) -> list[tuple]:
 
 
 def assert_equivalent(original, optimized, tables) -> Result:
-    """Contract §7 check: same output columns and same rows (order-insensitive unless the query sorts)."""
+    """Contract §7 check: same output column names and same rows (order-insensitive unless the query sorts).
+
+    Output columns are compared by name. The table qualifier is internal
+    bookkeeping that never reaches the user: removing a no-op
+    ``Project[sale_id]`` over ``Scan[sales]`` changes ``(None, 'sale_id')``
+    to ``('sales', 'sale_id')`` and nothing else. Qualifiers still matter
+    *inside* the plan, where strict resolution makes a broken reference
+    raise ``LookupError``.
+    """
     expected = evaluate(original, tables)
     actual = evaluate(optimized, tables)
-    assert actual.columns == expected.columns, (
-        f"output columns changed: {expected.columns} -> {actual.columns}"
-    )
+    expected_names = [name for _, name in expected.columns]
+    actual_names = [name for _, name in actual.columns]
+    assert actual_names == expected_names, f"output columns changed: {expected_names} -> {actual_names}"
     exp_rows, act_rows = _normalise(expected.rows), _normalise(actual.rows)
     if _is_ordered(original):
         assert act_rows == exp_rows, "ordered rows differ"

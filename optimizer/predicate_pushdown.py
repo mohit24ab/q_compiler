@@ -36,6 +36,11 @@ Rules, per node the conjunct is pushed into:
              rows.
   Unknown    Never crossed. The node's children are still optimized.
 
+A conjunct that reads no columns (a constant) is never moved. Constant
+folding owns those: it removes TRUE, and lifts FALSE as high as it can to
+short-circuit the largest possible subtree. Pushing constants down would
+undo that lift on every iteration.
+
 A conjunct that names an aggregate result by repeating its call (the
 binder writes ``HAVING COUNT(*) > 3`` that way) is never moved: it can only
 be evaluated above the Aggregate that computes it. That holds even when the
@@ -74,9 +79,10 @@ class _Pusher:
 
     def push(self, node: Any, preds: list[Any]) -> Any:
         """Return a plan equivalent to ``Filter(node, AND(preds))``, with the predicates pushed as deep as allowed."""
-        pinned, preds = _partition(preds, lambda p: bool(agg_calls(p)))
-        if pinned:  # a conjunct naming an aggregate result stays above the Aggregate
-            return _filter(self.push(node, preds), pinned)
+        # Constants, and conjuncts naming an aggregate result, stay where they are.
+        fixed, preds = _partition(preds, lambda p: not column_refs(p) or bool(agg_calls(p)))
+        if fixed:
+            return _filter(self.push(node, preds), fixed)
         if isinstance(node, Filter):
             return self.push(node.child, split_conjuncts(node.predicate) + preds)
         if isinstance(node, Scan):
@@ -161,11 +167,13 @@ class _Pusher:
                     cond.append(p)
                 elif s == {RIGHT}:
                     to_right.append(p)
-                else:  # left-only, or reads no columns at all
+                elif s == {LEFT}:
                     to_left.append(p)
+                else:  # a constant ON conjunct stays in the condition
+                    cond.append(p)
         elif node.kind == "left":
-            to_left, above = _partition(preds, lambda p: sides(p) in ({LEFT}, set()))
-            to_right, cond = _partition(on, lambda p: sides(p) in ({RIGHT}, set()))
+            to_left, above = _partition(preds, lambda p: sides(p) == {LEFT})
+            to_right, cond = _partition(on, lambda p: sides(p) == {RIGHT})
         else:  # a join kind this pass doesn't know: leave its predicates alone
             to_left, to_right, cond, above = [], [], on, preds
 

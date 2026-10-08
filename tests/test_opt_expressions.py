@@ -6,7 +6,7 @@ import opt_ir  # noqa: F401
 from ir.dtype import DType
 from ir.expr import Literal, UnaryOp
 from opt_query_suite import col, lit, op
-from optimizer.expressions import conjoin, can_be_true, rebuild, split_conjuncts, substitute
+from optimizer.expressions import conjoin, can_be_true, op_name, rebuild, split_conjuncts, substitute
 
 A, B, C = (op(">", col(n), lit(1)) for n in "abc")
 NULL = Literal(value=None, dtype=DType.INT)
@@ -64,6 +64,9 @@ R, L = col("v", "r"), col("v", "l")
     (lit(True), True),
     (lit(False), False),  # never TRUE at all
     (NULL, False),
+    # Person A's underscore spellings mean the same as the spaced ones.
+    (UnaryOp("IS_NULL", R), True),
+    (UnaryOp("is_not_null", R), False),
     # Operators the analysis doesn't know are not assumed to return NULL.
     (op("IS DISTINCT FROM", R, lit(1)), True),
     (UnaryOp("ISNULL", R), True),
@@ -71,3 +74,15 @@ R, L = col("v", "r"), col("v", "l")
 ])
 def test_null_rejection(pred, possible):
     assert can_be_true(pred, right_is_null) is possible
+
+
+@pytest.mark.parametrize("spelling, canonical", [
+    ("IS NULL", "IS NULL"), ("is null", "IS NULL"), ("IS_NULL", "IS NULL"),
+    ("is_not_null", "IS NOT NULL"), ("and", "AND"), ("<>", "<>"),
+])
+def test_op_name_accepts_person_a_spellings(spelling, canonical):
+    assert op_name(spelling) == canonical
+
+
+def test_split_conjuncts_accepts_lowercase_and():
+    assert split_conjuncts(op("and", A, B)) == [A, B]
