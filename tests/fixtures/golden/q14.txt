@@ -1,0 +1,4 @@
+Project[customer.nation AS nation, cust_count, avg_acctbal, min_acctbal, max_acctbal]
+  Filter[count(*) > 3]
+    Aggregate[group=customer.nation, aggs=count(*) AS cust_count, avg(customer.acctbal) AS avg_acctbal, min(customer.acctbal) AS min_acctbal, max(customer.acctbal) AS max_acctbal]
+      Scan[customer]

@@ -1,0 +1,5 @@
+Limit[n=25]
+  Sort[keys=lineitem.id ASC]
+    Project[lineitem.id AS id, lineitem.order_id AS order_id, lineitem.part_id AS part_id, lineitem.quantity AS quantity, lineitem.extended_price AS extended_price, lineitem.discount AS discount, lineitem.tax AS tax]
+      Filter[lineitem.discount >= 0.05 AND lineitem.tax < 0.04 OR lineitem.quantity > 40 AND NOT (lineitem.status = 'F')]
+        Scan[lineitem]
