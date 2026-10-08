@@ -69,8 +69,12 @@ def test_sort_key_only_column_is_still_read():
     assert scans(prune(S.sort_key_only_column())) == {"sales": ["sale_id", "amount", "qty"]}
 
 
-def test_pushed_predicate_columns_are_still_read():
-    assert scans(prune(S.pushed_predicate_column())) == {"sales": ["sale_id", "amount"]}
+def test_columns_read_only_by_the_pushed_predicate_are_dropped():
+    # Codegen filters the full table before narrowing to `columns` (Person C, C1).
+    out = prune(S.pushed_predicate_column())
+    assert scans(out) == {"sales": ["sale_id"]}
+    (scan_node,) = find(out, Scan)
+    assert scan_node.pushed_predicate == op(">", col("amount"), lit(100.0))
 
 
 def test_qualifiers_separate_tables_with_colliding_column_names():

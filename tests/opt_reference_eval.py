@@ -43,13 +43,15 @@ class Result:
 def evaluate(plan, tables: dict[str, tuple[list[str], list[tuple]]]) -> Result:
     """Evaluate ``plan`` over ``tables``, which maps each table name to ``(column_names, rows)``."""
     if isinstance(plan, Scan):
+        # Same order as Person C's Scan: filter the full table, then narrow to
+        # `columns`. So pushed_predicate may read columns not in `columns`.
         names, rows = tables[plan.table]
+        if plan.pushed_predicate is not None:
+            full = [(plan.table, n) for n in names]
+            rows = [r for r in rows if _eval(plan.pushed_predicate, full, r) is True]
         cols = list(plan.columns) if plan.columns is not None else list(names)
         idx = [names.index(c) for c in cols]
-        out = Result([(plan.table, c) for c in cols], [tuple(r[i] for i in idx) for r in rows])
-        if plan.pushed_predicate is not None:
-            out.rows = [r for r in out.rows if _eval(plan.pushed_predicate, out.columns, r) is True]
-        return out
+        return Result([(plan.table, c) for c in cols], [tuple(r[i] for i in idx) for r in rows])
     if isinstance(plan, Filter):
         child = evaluate(plan.child, tables)
         keep = [r for r in child.rows if _eval(plan.predicate, child.columns, r, child.computed) is True]

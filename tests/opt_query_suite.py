@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 import opt_ir  # noqa: F401  (must come before any ir import)
 from ir.dtype import DType
-from ir.expr import AggCall, BinaryOp, ColumnRef, Literal
+from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
 
 # --------------------------------------------------------------------------
@@ -328,3 +328,165 @@ def sorted_join():
     """SELECT o_id, c_name FROM orders JOIN customer ON o_custkey = c_id ORDER BY o_id"""
     j = join(scan("orders"), scan("customer"), op("=", col("o_custkey"), col("c_id")))
     return project(Sort(child=j, keys=[(col("o_id"), False)]), *keep("o_id", "c_name"))
+
+
+# --------------------------------------------------------------------------
+# Predicate pushdown (B3)
+#
+# The "must not push" queries are built so that the illegal push gives a
+# different answer on this data. The differential test would then fail.
+# test_opt_differential.py's negative controls check this.
+# --------------------------------------------------------------------------
+
+
+def is_null(expr: Any) -> UnaryOp:
+    return UnaryOp(op="IS NULL", operand=expr)
+
+
+@query
+def stacked_filters():
+    """SELECT * FROM (SELECT * FROM sales WHERE qty > 2) WHERE region = 'EU'"""
+    inner = Filter(child=scan("sales"), predicate=op(">", col("qty"), lit(2)))
+    return Filter(child=inner, predicate=op("=", col("region"), lit("EU")))
+
+
+@query
+def filter_merges_with_pushed_predicate():
+    """SELECT sale_id FROM sales WHERE qty > 5   -- over a scan that already filters amount"""
+    base = scan("sales", pushed=op(">", col("amount"), lit(50.0)))
+    return project(Filter(child=base, predicate=op(">", col("qty"), lit(5))), *keep("sale_id"))
+
+
+@query
+def filter_through_computed_project():
+    """SELECT * FROM (SELECT sale_id, qty * amount AS value FROM sales) WHERE value > 500"""
+    inner = project(scan("sales"), (col("sale_id"), "sale_id"), (op("*", col("qty"), col("amount")), "value"))
+    return Filter(child=inner, predicate=op(">", col("value"), lit(500.0)))
+
+
+@query
+def filter_through_sort():
+    """SELECT * FROM (SELECT sale_id, qty FROM sales ORDER BY qty DESC, sale_id) WHERE qty < 4"""
+    inner = Sort(child=project(scan("sales"), *keep("sale_id", "qty")),
+                 keys=[(col("qty"), True), (col("sale_id"), False)])
+    return Filter(child=inner, predicate=op("<", col("qty"), lit(4)))
+
+
+@query
+def filter_above_limit_must_not_push():
+    """SELECT * FROM (SELECT sale_id, qty FROM sales ORDER BY sale_id LIMIT 10) WHERE qty > 5"""
+    inner = Limit(child=Sort(child=project(scan("sales"), *keep("sale_id", "qty")),
+                             keys=[(col("sale_id"), False)]), n=10)
+    return Filter(child=inner, predicate=op(">", col("qty"), lit(5)))
+
+
+@query
+def where_splits_across_inner_join():
+    """SELECT o_id, c_name FROM orders JOIN customer ON o_custkey = c_id
+    WHERE o_total > 100 AND c_segment = 'AUTO' AND o_custkey + c_nationkey > 4"""
+    j = join(scan("orders"), scan("customer"), op("=", col("o_custkey"), col("c_id")))
+    pred = op("AND", op("AND", op(">", col("o_total"), lit(100.0)), op("=", col("c_segment"), lit("AUTO"))),
+              op(">", op("+", col("o_custkey"), col("c_nationkey")), lit(4)))
+    return project(Filter(child=j, predicate=pred), *keep("o_id", "c_name"))
+
+
+@query
+def single_side_on_conjuncts_of_inner_join():
+    """SELECT o_id FROM orders JOIN customer ON o_custkey = c_id AND o_status = 'F' AND c_balance > 0"""
+    cond = op("AND", op("AND", op("=", col("o_custkey"), col("c_id")), op("=", col("o_status"), lit("F"))),
+              op(">", col("c_balance"), lit(0.0)))
+    return project(join(scan("orders"), scan("customer"), cond), *keep("o_id"))
+
+
+@query
+def filter_through_three_way_join():
+    """SELECT o_id FROM orders JOIN customer ON o_custkey = c_id JOIN nation ON c_nationkey = n_id
+    WHERE n_region = 'AMERICA'"""
+    inner = join(scan("orders"), scan("customer"), op("=", col("o_custkey"), col("c_id")))
+    outer = join(inner, scan("nation"), op("=", col("c_nationkey"), col("n_id")))
+    return project(Filter(child=outer, predicate=op("=", col("n_region"), lit("AMERICA"))), *keep("o_id"))
+
+
+@query
+def left_join_where_on_preserved_side():
+    """SELECT c_name, o_total FROM customer LEFT JOIN orders ON c_id = o_custkey WHERE c_segment = 'AUTO'"""
+    j = join(scan("customer"), scan("orders"), op("=", col("c_id"), col("o_custkey")), kind="left")
+    return project(Filter(child=j, predicate=op("=", col("c_segment"), lit("AUTO"))), *keep("c_name", "o_total"))
+
+
+@query
+def left_join_null_rejecting_where_becomes_inner():
+    """SELECT c_name, o_total FROM customer LEFT JOIN orders ON c_id = o_custkey WHERE o_total > 200"""
+    j = join(scan("customer"), scan("orders"), op("=", col("c_id"), col("o_custkey")), kind="left")
+    return project(Filter(child=j, predicate=op(">", col("o_total"), lit(200.0))), *keep("c_name", "o_total"))
+
+
+@query
+def left_join_is_null_must_not_push():
+    """SELECT c_name FROM customer LEFT JOIN orders ON c_id = o_custkey WHERE o_id IS NULL   -- anti-join"""
+    j = join(scan("customer"), scan("orders"), op("=", col("c_id"), col("o_custkey")), kind="left")
+    return project(Filter(child=j, predicate=is_null(col("o_id"))), *keep("c_name"))
+
+
+@query
+def left_join_or_with_preserved_side_must_not_push():
+    """SELECT c_name, o_total FROM customer LEFT JOIN orders ON c_id = o_custkey
+    WHERE o_total > 200 OR c_name = 'cust#11'   -- customer 11 has no orders, by construction"""
+    j = join(scan("customer"), scan("orders"), op("=", col("c_id"), col("o_custkey")), kind="left")
+    pred = op("OR", op(">", col("o_total"), lit(200.0)), op("=", col("c_name"), lit("cust#11")))
+    return project(Filter(child=j, predicate=pred), *keep("c_name", "o_total"))
+
+
+@query
+def left_join_on_conjuncts():
+    """SELECT c_name, o_total FROM customer LEFT JOIN orders
+    ON c_id = o_custkey AND o_status = 'F' AND c_segment = 'AUTO'"""
+    cond = op("AND", op("AND", op("=", col("c_id"), col("o_custkey")), op("=", col("o_status"), lit("F"))),
+              op("=", col("c_segment"), lit("AUTO")))
+    j = join(scan("customer"), scan("orders"), cond, kind="left")
+    return project(j, *keep("c_name", "o_total"))
+
+
+@query
+def having_splits_on_group_key():
+    """SELECT region, total FROM sales GROUP BY region HAVING region <> 'AP' AND SUM(amount) > 1500"""
+    aggregate = Aggregate(child=scan("sales"), group_keys=[col("region")],
+                          aggs=[(agg("sum", col("amount")), "total")])
+    pred = op("AND", op("<>", col("region"), lit("AP")), op(">", col("total"), lit(1500.0)))
+    return project(Filter(child=aggregate, predicate=pred), *keep("region", "total"))
+
+
+@query
+def having_on_an_aggregate_of_a_group_key_must_not_push():
+    """SELECT region FROM sales GROUP BY region HAVING MAX(region) = 'EU'
+    -- MAX(region) reads only the group key, but is a result of the Aggregate"""
+    top = agg("max", col("region"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(top, "max(region)")])
+    return project(Filter(child=grouped, predicate=op("=", top, lit("EU"))), *keep("region"))
+
+
+@query
+def having_mixes_an_aggregate_and_a_group_key():
+    """SELECT region FROM sales GROUP BY region HAVING SUM(amount) > 1500.0 AND region <> 'AP'
+    -- the binder's form: the region conjunct can push, the SUM conjunct cannot"""
+    total = agg("sum", col("amount"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(total, "sum(amount)")])
+    pred = op("AND", op(">", total, lit(1500.0)), op("<>", col("region"), lit("AP")))
+    return project(Filter(child=grouped, predicate=pred), *keep("region"))
+
+
+@query
+def constant_false_over_global_aggregate_must_not_push():
+    """SELECT n FROM (SELECT COUNT(*) n FROM sales) WHERE 1 = 0"""
+    aggregate = Aggregate(child=scan("sales"), group_keys=[], aggs=[(agg("count"), "n")])
+    return Filter(child=aggregate, predicate=op("=", lit(1), lit(0)))
+
+
+@query
+def filter_through_project_over_join():
+    """SELECT * FROM (SELECT orders.o_id AS oid, customer.c_segment AS seg FROM orders JOIN customer
+    ON orders.o_custkey = customer.c_id) WHERE seg = 'BUILDING' AND oid > 10"""
+    j = join(scan("orders"), scan("customer"), op("=", col("o_custkey", "orders"), col("c_id", "customer")))
+    inner = project(j, (col("o_id", "orders"), "oid"), (col("c_segment", "customer"), "seg"))
+    pred = op("AND", op("=", col("seg"), lit("BUILDING")), op(">", col("oid"), lit(10)))
+    return Filter(child=inner, predicate=pred)

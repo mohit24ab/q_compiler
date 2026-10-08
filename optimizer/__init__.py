@@ -26,8 +26,10 @@ def default_passes() -> list[OptimizerPass]:
     # Imported here, not at module level: rewrite passes need Person A's IR,
     # while the framework itself (manager, traces) must work without it.
     from optimizer.column_pruning import ColumnPruning
+    from optimizer.predicate_pushdown import PredicatePushdown
 
-    return [ColumnPruning()]
+    # Pushdown first: moving a filter changes which columns each node needs.
+    return [PredicatePushdown(), ColumnPruning()]
 
 
 def optimize(plan: Any, catalog: Any) -> tuple[Any, list[PassTrace]]:
