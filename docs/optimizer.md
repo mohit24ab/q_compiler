@@ -14,19 +14,19 @@ is the sum over the queries of the fastest of 5 runs, not counting optimization,
 or compilation (`docs/ablation/codegen.md`).
 
 **Person A's 20 golden queries**, bound from SQL by the frontend, on Person A's `bench` dataset
-(5,000 customers, 5,000 parts, 25,000 orders, 100,000 lineitems):
+(50,000 customers, 50,000 parts, 250,000 orders, 1,000,000 lineitems):
 
 | configuration | total runtime | slower than all passes | values read from tables | wrong results |
 |---|--:|--:|--:|--:|
-| all passes | 333.9 ms | — | 5,985,000 | 0 |
-| without predicate pushdown | 908.5 ms | 2.72x | 5,985,000 | 0 |
-| without join reordering | 344.0 ms | 1.03x | 5,985,000 | 0 |
-| without column pruning | 397.1 ms | 1.19x | 12,915,000 | 0 |
-| without constant folding | 330.3 ms | 0.99x | 5,985,000 | 0 |
-| no passes | 1,161.5 ms | 3.48x | 12,915,000 | 0 |
+| all passes | 3,664.8 ms | — | 59,850,000 | 0 |
+| without predicate pushdown | 12,804.6 ms | 3.49x | 59,850,000 | 0 |
+| without join reordering | 3,958.8 ms | 1.08x | 59,850,000 | 0 |
+| without column pruning | 4,519.0 ms | 1.23x | 129,150,000 | 0 |
+| without constant folding | 3,780.5 ms | 1.03x | 59,850,000 | 0 |
+| no passes | 16,423.5 ms | 4.48x | 129,150,000 | 0 |
 
-The optimizer makes the benchmark 3.5 times faster. Pushdown does most of it (up to 5.2x on
-q10), and pruning halves the values read. The golden queries have no constant predicates and
+The optimizer makes the benchmark 4.5 times faster. Pushdown does most of it (up to 9.1x on
+q12), and pruning halves the values read. The golden queries have no constant predicates and
 join at most three tables, written in a reasonable order, so folding and reordering have little
 to do there; the suite below exercises them.
 
@@ -35,17 +35,17 @@ about 50 times the suite's size (2,000 orders, 4,000 lineitems, 200 customers, a
 
 | configuration | total runtime | slower than all passes | without the comma join | values read from tables | wrong results |
 |---|--:|--:|--:|--:|--:|
-| all passes | 26.2 ms | — | — | 354,357 | 0 |
-| without predicate pushdown | 237.3 ms | 9.1x | 1.40x | 354,357 | 0 |
-| without join reordering | 39.8 ms | 1.5x | 1.39x | 354,357 | 0 |
-| without column pruning | 32.1 ms | 1.2x | 1.21x | 1,536,033 | 0 |
-| without constant folding | 28.2 ms | 1.07x | 1.07x | 392,957 | 0 |
-| no passes | 401.3 ms | 15.3x | 2.27x | 1,848,033 | 0 |
+| all passes | 20.1 ms | — | — | 354,357 | 0 |
+| without predicate pushdown | 224.6 ms | 11.2x | 1.39x | 354,357 | 0 |
+| without join reordering | 28.3 ms | 1.4x | 1.32x | 354,357 | 0 |
+| without column pruning | 21.9 ms | 1.09x | 1.11x | 1,536,033 | 0 |
+| without constant folding | 19.8 ms | 0.98x | 1.00x | 392,957 | 0 |
+| no passes | 335.0 ms | 16.7x | 2.15x | 1,848,033 | 0 |
 
 One query dominates the suite's totals. `comma_join_with_a_cross_product` lists its tables in an
-order that makes a cross product, and the unoptimized plan runs it as one: it takes 86% of the
+order that makes a cross product, and the unoptimized plan runs it as one: it takes 88% of the
 unoptimized total. The "without the comma join" column is the same study over the other 68
-queries, where the passes make the suite 2.27 times faster.
+queries, where the passes make the suite 2.15 times faster.
 
 The raw numbers, one row per query and configuration, are in `docs/ablation/codegen.csv`, the
 file Person A's `bench/report.py` charts. Its format is fixed in `tests/opt_ablation_run.py`
@@ -137,9 +137,9 @@ codegen evaluates while reading.
 ```
 
 **Measured contribution.** The largest. On the golden queries, turning it off makes the
-benchmark 2.7 times slower, and q10, q12, q20 and q08 four to five times slower. On the suite it
-is 9.1 times, almost all of it in the comma join (301x: the WHERE clause stays above the cross
-product); over the other 68 queries it is worth 1.40x. Rows filtered at the scan never reach a
+benchmark 3.5 times slower, and q12, q10, q08 and q07 seven to nine times slower. On the suite it
+is 11.2 times, almost all of it in the comma join (216x: the WHERE clause stays above the cross
+product); over the other 68 queries it is worth 1.39x. Rows filtered at the scan never reach a
 join. It doesn't change how many values are read, because the scan reads every row of its
 columns anyway; it changes how much work follows the read.
 
@@ -182,10 +182,10 @@ whose FROM order crosses orders with nation):
 -     Scan[customer]
 ```
 
-**Measured contribution.** 1.5x over the suite, and 1.39x without the comma join. On individual
-queries: the comma join runs 6.4x faster, the three-way join filtered on `nation` 4.0x, the
-five-way join written fact-table-first 3.6x, and the nine-way chain (planned greedily) 2.4x. On
-the golden queries it is worth 1.03x overall, and 1.7x on q10 and q16: they join at most three
+**Measured contribution.** 1.4x over the suite, and 1.32x without the comma join. On individual
+queries: the five-way join written fact-table-first runs 3.5x faster, the comma join 3.3x, the
+three-way join filtered on `nation` 2.0x, and the nine-way chain (planned greedily) 1.9x. On
+the golden queries it is worth 1.08x overall, and 1.9x on q10: they join at most three
 tables, mostly in a sensible order already.
 
 **How it is checked.** On 40 random join graphs (chains, stars, cycles, cliques, random trees)
@@ -222,9 +222,9 @@ and a narrowing Project is inserted above a join whose output is wider than what
 +   Scan[sales, columns=[sale_id, amount]]
 ```
 
-**Measured contribution.** Without it, the golden queries read 2.2 times as many values (12.9
-million instead of 6.0 million) and run 1.19 times slower, up to 1.8x on q17. On the suite it
-reads 4.3 times as many values and runs 1.2 times slower.
+**Measured contribution.** Without it, the golden queries read 2.2 times as many values (129
+million instead of 60 million) and run 1.23 times slower, up to 1.8x on q17. On the suite it
+reads 4.3 times as many values and runs 1.1 times slower.
 
 ## Constant folding (`constant_folding.py`)
 
@@ -263,10 +263,11 @@ reads 4.3 times as many values and runs 1.2 times slower.
         ...the join below is never run
 ```
 
-**Measured contribution.** Small in total (1.07x on the suite, none on the golden queries, which
-have no constants to fold), because few queries have them. Where it applies, it beats every other
-pass: the empty-result queries run 8 to 116 times faster, because their joins and scans never
-run. Without folding, the suite reads 20,400 more rows.
+**Measured contribution.** Small in total, because few queries have constants: within run-to-run
+noise on the suite, and 1.03x on the golden queries, which have no constants but where the
+binder writes a no-op Project over 12 of the 20 (q06 runs 1.6x slower with it left in). Where it
+applies, it beats every other pass: the empty-result queries run 6 to 160 times faster, because
+their joins and scans never run. Without folding, the suite reads 20,400 more rows.
 
 ## Cost model and statistics
 
@@ -296,7 +297,7 @@ join output, aggregation and sorting separately.
   120 golden-query runs, and 0.93 over the 414 suite runs.
 * **Choosing between configurations:** for two configurations of the same query whose runtimes
   differ by more than 10%, the model picks the faster one 83% of the time on the golden queries
-  and 86% on the suite.
+  and 82% on the suite.
 
 ## How correctness is checked
 

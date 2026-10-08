@@ -8,76 +8,76 @@ estimated_cost_us, same_result and workload (`golden` rows come first).
 * Configurations: all passes; each pass switched off in turn; no passes (the plan as written).
 * Runtime: the fastest of 5 runs of each plan, excluding optimization, code generation and compilation.
 * `wrong results` counts queries whose result differs from the plan as written. It must be 0.
-* Code: the optimizer on branch b/phase-7-ablation (main a9a3048 merged in), with Person C's c/phase-7-demo (ee9d2b7) merged for the code generator.
+* Code: the optimizer on branch b/phase-7-ablation with main 0993653 merged in, which carries Person C's code generator.
 * Machine: x86_64, Python 3.11.17.
 
 ## Person A's 20 golden queries
 
-20 queries. Data: Person A's dataset at scale `bench`: customer 5,000, part 5,000, orders 25,000, lineitem 100,000.
+20 queries. Data: Person A's dataset at scale `bench`: customer 50,000, part 50,000, orders 250,000, lineitem 1,000,000.
 
 | configuration | runtime (ms) | vs all passes | rows scanned | values read | vs all passes | estimated cost (ms) | wrong results |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all passes | 333.9 | 1.00x | 1,415,000 | 5,985,000 | 1.00x | 469.6 | 0 |
-| without predicate_pushdown | 908.5 | 2.72x | 1,415,000 | 5,985,000 | 1.00x | 1249.8 | 0 |
-| without join_reordering | 344.0 | 1.03x | 1,415,000 | 5,985,000 | 1.00x | 486.9 | 0 |
-| without column_pruning | 397.1 | 1.19x | 1,415,000 | 12,915,000 | 2.16x | 701.4 | 0 |
-| without constant_folding | 330.3 | 0.99x | 1,415,000 | 5,985,000 | 1.00x | 469.6 | 0 |
-| no passes | 1161.5 | 3.48x | 1,415,000 | 12,915,000 | 2.16x | 1650.3 | 0 |
+| all passes | 3664.8 | 1.00x | 14,150,000 | 59,850,000 | 1.00x | 4731.0 | 0 |
+| without predicate_pushdown | 12804.6 | 3.49x | 14,150,000 | 59,850,000 | 1.00x | 12532.0 | 0 |
+| without join_reordering | 3958.8 | 1.08x | 14,150,000 | 59,850,000 | 1.00x | 4903.5 | 0 |
+| without column_pruning | 4519.0 | 1.23x | 14,150,000 | 129,150,000 | 2.16x | 7048.3 | 0 |
+| without constant_folding | 3780.5 | 1.03x | 14,150,000 | 59,850,000 | 1.00x | 4731.0 | 0 |
+| no passes | 16423.5 | 4.48x | 14,150,000 | 129,150,000 | 2.16x | 16537.9 | 0 |
 
-Rank correlation between estimated cost and measured runtime over all 120 runs: Spearman's ρ = 0.98. Within each query, for pairs of configurations whose runtimes differ by more than 10%, the cost model picks the faster one in 138 of 167 pairs (83%).
+Rank correlation between estimated cost and measured runtime over all 120 runs: Spearman's ρ = 0.98. Within each query, for pairs of configurations whose runtimes differ by more than 10%, the cost model picks the faster one in 151 of 183 pairs (83%).
 
 ### Without predicate_pushdown
 
 | query | all passes (ms) | without predicate_pushdown (ms) | slowdown |
 |---|--:|--:|--:|
-| q10 | 20.07 | 104.58 | 5.2x |
-| q12 | 18.00 | 86.57 | 4.8x |
-| q20 | 29.10 | 121.19 | 4.2x |
-| q08 | 14.37 | 56.99 | 4.0x |
-| q07 | 4.32 | 13.99 | 3.2x |
+| q12 | 148.77 | 1348.83 | 9.1x |
+| q10 | 202.59 | 1556.96 | 7.7x |
+| q08 | 126.36 | 881.39 | 7.0x |
+| q07 | 34.71 | 235.66 | 6.8x |
+| q20 | 383.73 | 1730.26 | 4.5x |
 
 ### Without join_reordering
 
 | query | all passes (ms) | without join_reordering (ms) | slowdown |
 |---|--:|--:|--:|
-| q10 | 20.07 | 34.72 | 1.7x |
-| q16 | 1.71 | 2.90 | 1.7x |
-| q02 | 10.17 | 12.29 | 1.2x |
-| q14 | 0.71 | 0.81 | 1.1x |
-| q04 | 0.49 | 0.51 | 1.0x |
+| q10 | 202.59 | 391.24 | 1.9x |
+| q06 | 1.69 | 2.13 | 1.3x |
+| q01 | 3.86 | 4.57 | 1.2x |
+| q15 | 53.40 | 61.72 | 1.2x |
+| q09 | 411.57 | 471.18 | 1.1x |
 
 ### Without column_pruning
 
 | query | all passes (ms) | without column_pruning (ms) | slowdown |
 |---|--:|--:|--:|
-| q17 | 11.46 | 20.42 | 1.8x |
-| q08 | 14.37 | 23.52 | 1.6x |
-| q16 | 1.71 | 2.66 | 1.6x |
-| q12 | 18.00 | 27.77 | 1.5x |
-| q20 | 29.10 | 42.05 | 1.4x |
+| q17 | 89.60 | 163.16 | 1.8x |
+| q12 | 148.77 | 238.36 | 1.6x |
+| q08 | 126.36 | 181.06 | 1.4x |
+| q06 | 1.69 | 2.36 | 1.4x |
+| q20 | 383.73 | 523.07 | 1.4x |
 
 ### Without constant_folding
 
 | query | all passes (ms) | without constant_folding (ms) | slowdown |
 |---|--:|--:|--:|
-| q16 | 1.71 | 2.82 | 1.6x |
-| q02 | 10.17 | 13.37 | 1.3x |
-| q10 | 20.07 | 23.42 | 1.2x |
-| q09 | 35.80 | 37.92 | 1.1x |
-| q04 | 0.49 | 0.52 | 1.1x |
+| q06 | 1.69 | 2.63 | 1.6x |
+| q16 | 12.10 | 14.66 | 1.2x |
+| q01 | 3.86 | 4.61 | 1.2x |
+| q02 | 92.20 | 105.29 | 1.1x |
+| q05 | 91.69 | 101.93 | 1.1x |
 
 ### No passes at all
 
 | query | all passes (ms) | no passes (ms) | slowdown |
 |---|--:|--:|--:|
-| q10 | 20.07 | 176.27 | 8.8x |
-| q12 | 18.00 | 112.44 | 6.2x |
-| q20 | 29.10 | 137.38 | 4.7x |
-| q08 | 14.37 | 67.15 | 4.7x |
-| q07 | 4.32 | 15.86 | 3.7x |
-| q11 | 54.10 | 198.14 | 3.7x |
-| q19 | 62.53 | 216.32 | 3.5x |
-| q09 | 35.80 | 122.42 | 3.4x |
+| q10 | 202.59 | 2588.48 | 12.8x |
+| q12 | 148.77 | 1624.99 | 10.9x |
+| q08 | 126.36 | 996.24 | 7.9x |
+| q07 | 34.71 | 263.19 | 7.6x |
+| q19 | 848.80 | 4066.26 | 4.8x |
+| q20 | 383.73 | 1718.48 | 4.5x |
+| q11 | 754.17 | 2736.97 | 3.6x |
+| q09 | 411.57 | 1368.71 | 3.3x |
 
 ## The optimizer's differential suite
 
@@ -85,75 +85,75 @@ Rank correlation between estimated cost and measured runtime over all 120 runs: 
 
 | configuration | runtime (ms) | vs all passes | rows scanned | values read | vs all passes | estimated cost (ms) | wrong results |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all passes | 26.2 | 1.00x | 131,686 | 354,357 | 1.00x | 56.8 | 0 |
-| without predicate_pushdown | 237.3 | 9.05x | 131,686 | 354,357 | 1.00x | 283.8 | 0 |
-| without join_reordering | 39.8 | 1.52x | 131,686 | 354,357 | 1.00x | 83.5 | 0 |
-| without column_pruning | 32.1 | 1.23x | 131,686 | 1,536,033 | 4.33x | 77.7 | 0 |
-| without constant_folding | 28.2 | 1.07x | 152,086 | 392,957 | 1.11x | 59.5 | 0 |
-| no passes | 401.3 | 15.31x | 152,086 | 1,848,033 | 5.22x | 575.2 | 0 |
+| all passes | 20.1 | 1.00x | 131,686 | 354,357 | 1.00x | 56.8 | 0 |
+| without predicate_pushdown | 224.6 | 11.16x | 131,686 | 354,357 | 1.00x | 283.8 | 0 |
+| without join_reordering | 28.3 | 1.41x | 131,686 | 354,357 | 1.00x | 83.5 | 0 |
+| without column_pruning | 21.9 | 1.09x | 131,686 | 1,536,033 | 4.33x | 77.7 | 0 |
+| without constant_folding | 19.8 | 0.98x | 152,086 | 392,957 | 1.11x | 59.5 | 0 |
+| no passes | 335.0 | 16.66x | 152,086 | 1,848,033 | 5.22x | 575.2 | 0 |
 
-One query, `comma_join_with_a_cross_product`, takes 86% of the unoptimized total. The same totals without it:
+One query, `comma_join_with_a_cross_product`, takes 88% of the unoptimized total. The same totals without it:
 
 | configuration | runtime (ms) | vs all passes | rows scanned | values read | vs all passes | estimated cost (ms) | wrong results |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all passes | 25.6 | 1.00x | 129,481 | 349,947 | 1.00x | 54.9 | 0 |
-| without predicate_pushdown | 35.8 | 1.40x | 129,481 | 349,947 | 1.00x | 80.0 | 0 |
-| without join_reordering | 35.5 | 1.39x | 129,481 | 349,947 | 1.00x | 80.7 | 0 |
-| without column_pruning | 30.8 | 1.21x | 129,481 | 1,525,018 | 4.36x | 75.6 | 0 |
-| without constant_folding | 27.4 | 1.07x | 149,881 | 388,547 | 1.11x | 57.7 | 0 |
-| no passes | 58.1 | 2.27x | 149,881 | 1,837,018 | 5.25x | 137.2 | 0 |
+| all passes | 19.2 | 1.00x | 129,481 | 349,947 | 1.00x | 54.9 | 0 |
+| without predicate_pushdown | 26.6 | 1.39x | 129,481 | 349,947 | 1.00x | 80.0 | 0 |
+| without join_reordering | 25.3 | 1.32x | 129,481 | 349,947 | 1.00x | 80.7 | 0 |
+| without column_pruning | 21.2 | 1.11x | 129,481 | 1,525,018 | 4.36x | 75.6 | 0 |
+| without constant_folding | 19.2 | 1.00x | 149,881 | 388,547 | 1.11x | 57.7 | 0 |
+| no passes | 41.3 | 2.15x | 149,881 | 1,837,018 | 5.25x | 137.2 | 0 |
 
-Rank correlation between estimated cost and measured runtime over all 414 runs: Spearman's ρ = 0.93. Within each query, for pairs of configurations whose runtimes differ by more than 10%, the cost model picks the faster one in 558 of 651 pairs (86%).
+Rank correlation between estimated cost and measured runtime over all 414 runs: Spearman's ρ = 0.93. Within each query, for pairs of configurations whose runtimes differ by more than 10%, the cost model picks the faster one in 536 of 652 pairs (82%).
 
 ### Without predicate_pushdown
 
 | query | all passes (ms) | without predicate_pushdown (ms) | slowdown |
 |---|--:|--:|--:|
-| comma_join_with_a_cross_product | 0.67 | 201.46 | 301.3x |
-| filter_through_three_way_join | 0.46 | 1.35 | 3.0x |
-| nine_way_chain | 0.53 | 1.42 | 2.7x |
-| left_join_where_on_preserved_side | 0.41 | 1.08 | 2.7x |
-| five_way_join_in_a_bad_order | 1.24 | 2.91 | 2.3x |
+| comma_join_with_a_cross_product | 0.92 | 197.94 | 215.5x |
+| five_way_join_in_a_bad_order | 0.92 | 2.26 | 2.5x |
+| nine_way_chain | 0.28 | 0.67 | 2.4x |
+| where_splits_across_inner_join | 0.24 | 0.53 | 2.2x |
+| join_region_under_aggregate | 1.48 | 3.13 | 2.1x |
 
 ### Without join_reordering
 
 | query | all passes (ms) | without join_reordering (ms) | slowdown |
 |---|--:|--:|--:|
-| comma_join_with_a_cross_product | 0.67 | 4.28 | 6.4x |
-| filter_through_three_way_join | 0.46 | 1.81 | 4.0x |
-| five_way_join_in_a_bad_order | 1.24 | 4.48 | 3.6x |
-| nine_way_chain | 0.53 | 1.28 | 2.4x |
-| three_relation_conjunct | 0.51 | 1.05 | 2.0x |
+| five_way_join_in_a_bad_order | 0.92 | 3.24 | 3.5x |
+| comma_join_with_a_cross_product | 0.92 | 3.02 | 3.3x |
+| three_relation_conjunct | 0.42 | 0.87 | 2.1x |
+| filter_through_three_way_join | 0.31 | 0.63 | 2.0x |
+| nested_join_regions | 1.31 | 2.49 | 1.9x |
 
 ### Without column_pruning
 
 | query | all passes (ms) | without column_pruning (ms) | slowdown |
 |---|--:|--:|--:|
-| count_star | 0.01 | 0.10 | 10.0x |
-| constant_over_global_aggregate | 0.01 | 0.10 | 8.7x |
-| global_aggregate_over_empty_must_not_lift | 0.01 | 0.03 | 2.6x |
-| sort_key_only_column | 0.16 | 0.34 | 2.1x |
-| filter_through_three_way_join | 0.46 | 0.90 | 2.0x |
+| constant_over_global_aggregate | 0.01 | 0.05 | 8.7x |
+| count_star | 0.01 | 0.04 | 7.8x |
+| global_aggregate_over_empty_must_not_lift | 0.01 | 0.02 | 3.0x |
+| having_mixes_an_aggregate_and_a_group_key | 0.19 | 0.37 | 1.9x |
+| sort_key_only_column | 0.14 | 0.27 | 1.9x |
 
 ### Without constant_folding
 
 | query | all passes (ms) | without constant_folding (ms) | slowdown |
 |---|--:|--:|--:|
-| false_filter_over_join_and_sort | 0.01 | 0.73 | 116.3x |
-| empty_side_of_inner_join | 0.00 | 0.22 | 89.4x |
-| null_comparison_rejects_every_row | 0.00 | 0.05 | 15.5x |
-| limit_zero | 0.00 | 0.05 | 13.3x |
-| contradiction_on_range | 0.00 | 0.02 | 7.7x |
+| false_filter_over_join_and_sort | 0.00 | 0.46 | 161.6x |
+| empty_side_of_inner_join | 0.00 | 0.14 | 79.9x |
+| null_comparison_rejects_every_row | 0.00 | 0.04 | 21.9x |
+| limit_zero | 0.00 | 0.04 | 19.5x |
+| contradiction_on_equalities | 0.00 | 0.01 | 7.6x |
 
 ### No passes at all
 
 | query | all passes (ms) | no passes (ms) | slowdown |
 |---|--:|--:|--:|
-| comma_join_with_a_cross_product | 0.67 | 343.19 | 513.3x |
-| empty_side_of_inner_join | 0.00 | 0.30 | 117.7x |
-| false_filter_over_join_and_sort | 0.01 | 0.72 | 114.4x |
-| constant_false_over_global_aggregate_must_not_push | 0.00 | 0.06 | 23.0x |
-| limit_zero | 0.00 | 0.08 | 20.8x |
-| grouped_aggregate_over_empty | 0.00 | 0.08 | 20.6x |
-| null_comparison_rejects_every_row | 0.00 | 0.05 | 16.8x |
-| contradiction_on_range | 0.00 | 0.03 | 12.2x |
+| comma_join_with_a_cross_product | 0.92 | 293.80 | 319.9x |
+| false_filter_over_join_and_sort | 0.00 | 0.48 | 169.1x |
+| empty_side_of_inner_join | 0.00 | 0.16 | 92.9x |
+| grouped_aggregate_over_empty | 0.00 | 0.07 | 30.6x |
+| constant_false_over_global_aggregate_must_not_push | 0.00 | 0.06 | 24.7x |
+| null_comparison_rejects_every_row | 0.00 | 0.04 | 22.9x |
+| limit_zero | 0.00 | 0.05 | 19.8x |
+| global_aggregate_over_empty_must_not_lift | 0.01 | 0.10 | 17.4x |
