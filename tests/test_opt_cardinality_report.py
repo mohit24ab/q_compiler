@@ -80,6 +80,6 @@ def test_committed_report_is_current():
     def numbers_only(text):
         return re.sub(r"`[^`]*`", "`plan`", text)
 
-    committed = Path(opt_cardinality_table.OUT).read_text()
+    committed = Path(opt_cardinality_table.OUT).read_text(encoding="utf-8")
     assert numbers_only(committed) == numbers_only(opt_cardinality_table.render()), \
         "stale report: run `python tests/opt_cardinality_table.py`"

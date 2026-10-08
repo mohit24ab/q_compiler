@@ -151,5 +151,5 @@ def test_pruning_before_reordering_costs_more(study):
 
 
 def test_committed_pass_order_table_is_current(study):
-    committed = (Path(__file__).parent.parent / "docs" / "ablation" / "pass_order.md").read_text()
+    committed = (Path(__file__).parent.parent / "docs" / "ablation" / "pass_order.md").read_text(encoding="utf-8")
     assert order_table(study) in committed, "stale: run `python tests/opt_ablation_run.py --order`"

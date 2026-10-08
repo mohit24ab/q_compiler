@@ -9,6 +9,7 @@ from ir.dtype import DType
 from ir.expr import AggCall, BinaryOp, ColumnRef, Expr, Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, PlanNode, Project, Scan, Sort
 from ir.printer import format_expr
+from ir.visitor import transform_expr_post_order
 from frontend.resolver import Resolver, SemanticError
 from frontend.typecheck import TypeChecker, SemanticTypeError
 
@@ -232,14 +233,20 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
     group_clause = ast.args.get("group")
     having_clause = ast.args.get("having")
+    order_clause = ast.args.get("order")
     select_items = ast.expressions
 
     has_group_by = group_clause is not None
-    has_aggs = any(e.find(exp.AggFunc) is not None for e in select_items) or (having_clause is not None)
+    has_aggs = (
+        any(e.find(exp.AggFunc) is not None for e in select_items)
+        or (having_clause is not None)
+        or (order_clause is not None and order_clause.find(exp.AggFunc) is not None)
+    )
 
     group_keys: list[Expr] = []
     aggs: list[tuple[AggCall, str]] = []
     registered_aggs: dict[str, str] = {}
+    agg_call_to_alias: dict[AggCall, str] = {}
 
     if has_group_by or has_aggs:
         if group_clause is not None:
@@ -250,12 +257,17 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
         def register_agg_call(agg_node: exp.AggFunc, explicit_alias: str | None = None) -> str:
             bound_agg = _bind_agg(agg_node, resolver, typechecker)
+            if bound_agg in agg_call_to_alias:
+                return agg_call_to_alias[bound_agg]
             alias = explicit_alias if explicit_alias else _get_agg_alias(bound_agg)
             key = repr(agg_node)
             if key not in registered_aggs:
                 registered_aggs[key] = alias
+                agg_call_to_alias[bound_agg] = alias
                 aggs.append((bound_agg, alias))
-            return registered_aggs[key]
+            else:
+                agg_call_to_alias[bound_agg] = registered_aggs[key]
+            return agg_call_to_alias[bound_agg]
 
         for se in select_items:
             if isinstance(se, exp.Alias) and isinstance(se.this, exp.AggFunc):
@@ -268,6 +280,19 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
             for agg_node in having_clause.this.find_all(exp.AggFunc):
                 register_agg_call(agg_node)
 
+        synth_ord_aggs: list[str] = []
+        if order_clause is not None:
+            for ordered in order_clause.expressions:
+                for agg_node in ordered.find_all(exp.AggFunc):
+                    bound_agg = _bind_agg(agg_node, resolver, typechecker)
+                    if bound_agg not in agg_call_to_alias:
+                        synth_alias = f"__ord_agg_{len(synth_ord_aggs)}"
+                        synth_ord_aggs.append(synth_alias)
+                        key = repr(agg_node)
+                        registered_aggs[key] = synth_alias
+                        agg_call_to_alias[bound_agg] = synth_alias
+                        aggs.append((bound_agg, synth_alias))
+
         current_plan = Aggregate(
             child=current_plan,
             group_keys=group_keys,
@@ -279,6 +304,7 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
             typechecker.check_boolean_condition(having_pred, (current_plan, resolver), context_name="HAVING")
             current_plan = Filter(child=current_plan, predicate=having_pred)
 
+    select_aliases = {se.alias for se in select_items if isinstance(se, exp.Alias)}
     project_exprs: list[tuple[Expr, str]] = []
     is_wildcard = any(isinstance(e, exp.Star) for e in select_items)
 
@@ -310,6 +336,20 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
                 bound_e = _bind_expr(expr_ast, resolver, typechecker)
                 project_exprs.append((bound_e, alias))
 
+    user_project_exprs = list(project_exprs)
+    extra_order_proj_aliases: list[str] = []
+    if order_clause is not None and (has_group_by or has_aggs):
+        existing_proj_aliases = {alias for _, alias in project_exprs}
+        for ordered in order_clause.expressions:
+            for agg_node in ordered.find_all(exp.AggFunc):
+                bound_agg = _bind_agg(agg_node, resolver, typechecker)
+                if bound_agg in agg_call_to_alias:
+                    agg_alias = agg_call_to_alias[bound_agg]
+                    if agg_alias not in existing_proj_aliases:
+                        project_exprs.append((ColumnRef(table=None, name=agg_alias), agg_alias))
+                        existing_proj_aliases.add(agg_alias)
+                        extra_order_proj_aliases.append(agg_alias)
+
     proj_aliases = {alias: expr for expr, alias in project_exprs}
     agg_aliases = {alias for _, alias in aggs}
 
@@ -326,19 +366,30 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
     current_plan = Project(child=current_plan, exprs=project_exprs)
 
-    order_clause = ast.args.get("order")
     if order_clause is not None:
         sort_keys: list[tuple[Expr, bool]] = []
         for ordered in order_clause.expressions:
             is_desc = bool(ordered.args.get("desc", False))
             order_ast = ordered.this
-            if isinstance(order_ast, exp.Column) and not order_ast.table and order_ast.name in proj_aliases:
-                try:
-                    sort_expr = resolver.resolve_column(name=order_ast.name)
-                except ValueError:
+            if isinstance(order_ast, exp.Column) and not order_ast.table:
+                if order_ast.name in select_aliases:
                     sort_expr = ColumnRef(table=None, name=order_ast.name)
+                elif order_ast.name in proj_aliases:
+                    try:
+                        sort_expr = resolver.resolve_column(name=order_ast.name)
+                    except ValueError:
+                        sort_expr = ColumnRef(table=None, name=order_ast.name)
+                else:
+                    sort_expr = _bind_expr(order_ast, resolver, typechecker)
             else:
                 sort_expr = _bind_expr(order_ast, resolver, typechecker)
+
+            def _map_agg_to_colref(e: Expr) -> Expr:
+                if isinstance(e, AggCall) and e in agg_call_to_alias:
+                    return ColumnRef(table=None, name=agg_call_to_alias[e])
+                return e
+
+            sort_expr = transform_expr_post_order(sort_expr, _map_agg_to_colref)
             sort_keys.append((sort_expr, is_desc))
 
         if has_group_by or has_aggs:
@@ -353,6 +404,15 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
             typechecker.infer_type(s_expr, (current_plan, resolver))
 
         current_plan = Sort(child=current_plan, keys=sort_keys)
+
+        if extra_order_proj_aliases:
+            final_project_exprs: list[tuple[Expr, str]] = [
+                (ColumnRef(table=None, name=alias), alias)
+                for _, alias in user_project_exprs
+            ]
+            for f_expr, _ in final_project_exprs:
+                typechecker.infer_type(f_expr, (current_plan, resolver))
+            current_plan = Project(child=current_plan, exprs=final_project_exprs)
 
     limit_clause = ast.args.get("limit")
     if limit_clause is not None:

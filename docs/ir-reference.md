@@ -121,6 +121,7 @@ class Filter(PlanNode):
 - **Schema Derivation:** Pass-through; returns `child.schema()`.
 - **replace_children:** Expects sequence of length 1 `(new_child,)`.
 - **Printer Format:** `Filter[customer.mktsegment = 'BUILDING']`
+- **Semantic rule:** An AggCall appearing inside a HAVING predicate (Filter.predicate) or in Sort.keys represents the already-computed aggregate result from the underlying Aggregate operator, NOT a request to re-evaluate or re-aggregate the argument.
 
 ---
 
@@ -209,6 +210,7 @@ class Sort(PlanNode):
 - **Schema Derivation:** Pass-through; returns `child.schema()`.
 - **replace_children:** Expects sequence of length 1 `(new_child,)`.
 - **Printer Format:** `Sort[keys=customer.acctbal DESC, customer.id ASC]`
+- **Semantic rule:** An AggCall appearing inside a HAVING predicate (Filter.predicate) or in Sort.keys represents the already-computed aggregate result from the underlying Aggregate operator, NOT a request to re-evaluate or re-aggregate the argument.
 
 ---
 
