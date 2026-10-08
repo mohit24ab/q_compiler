@@ -3,9 +3,9 @@ from dataclasses import FrozenInstanceError
 
 from ir.dtype import DType
 from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
-from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
+from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort, _infer_expr_dtype
 from ir.visitor import transform_post_order
-from ir.printer import format_plan
+from ir.printer import format_expr, format_plan
 
 
 class MockScan(Scan):
@@ -159,3 +159,108 @@ def test_three_hand_built_plans_printer_output():
         "    Scan[customer]"
     )
     assert format_plan(proj3) == expected_3
+
+
+def test_unary_op_is_null_format_and_type_inference():
+    col_x = ColumnRef(table=None, name="x")
+
+    assert format_expr(UnaryOp(op="IS NULL", operand=ColumnRef(None, "x"))) == "x IS NULL"
+    assert format_expr(UnaryOp(op="IS NOT NULL", operand=ColumnRef(None, "x"))) == "x IS NOT NULL"
+
+    # Additional case-insensitive and underscore variants
+    assert format_expr(UnaryOp(op="is null", operand=col_x)) == "x IS NULL"
+    assert format_expr(UnaryOp(op="is not null", operand=col_x)) == "x IS NOT NULL"
+    assert format_expr(UnaryOp(op="IS_NULL", operand=col_x)) == "x IS NULL"
+    assert format_expr(UnaryOp(op="IS_NOT_NULL", operand=col_x)) == "x IS NOT NULL"
+    assert format_expr(UnaryOp(op="is_null", operand=col_x)) == "x IS NULL"
+    assert format_expr(UnaryOp(op="is_not_null", operand=col_x)) == "x IS NOT NULL"
+
+    # Type inference tests
+    child_schema = [("x", DType.INT)]
+    assert _infer_expr_dtype(UnaryOp(op="IS NULL", operand=col_x), child_schema) == DType.BOOL
+    assert _infer_expr_dtype(UnaryOp(op="IS NOT NULL", operand=col_x), child_schema) == DType.BOOL
+    assert _infer_expr_dtype(UnaryOp(op="IS_NULL", operand=col_x), child_schema) == DType.BOOL
+    assert _infer_expr_dtype(UnaryOp(op="IS_NOT_NULL", operand=col_x), child_schema) == DType.BOOL
+
+
+def test_printer_parentheses_precedence():
+    x = ColumnRef(table=None, name="x")
+    y = ColumnRef(table=None, name="y")
+    z = ColumnRef(table=None, name="z")
+    a = ColumnRef(table=None, name="a")
+    b = ColumnRef(table=None, name="b")
+    c = ColumnRef(table=None, name="c")
+
+    # BinaryOp("AND", BinaryOp("OR", x, y), z) formats as (x OR y) AND z
+    assert format_expr(BinaryOp("AND", BinaryOp("OR", x, y), z)) == "(x OR y) AND z"
+
+    # BinaryOp("AND", z, BinaryOp("OR", x, y)) formats as z AND (x OR y)
+    assert format_expr(BinaryOp("AND", z, BinaryOp("OR", x, y))) == "z AND (x OR y)"
+
+    # BinaryOp("*", BinaryOp("+", x, y), z) formats as (x + y) * z
+    assert format_expr(BinaryOp("*", BinaryOp("+", x, y), z)) == "(x + y) * z"
+
+    # BinaryOp("-", a, BinaryOp("-", b, c)) formats as a - (b - c)
+    assert format_expr(BinaryOp("-", a, BinaryOp("-", b, c))) == "a - (b - c)"
+
+    # Standard unparenthesized expressions like x AND y and x * y + z format cleanly without unnecessary double parentheses
+    assert format_expr(BinaryOp("AND", x, y)) == "x AND y"
+    assert format_expr(BinaryOp("+", BinaryOp("*", x, y), z)) == "x * y + z"
+    assert format_expr(BinaryOp("+", x, BinaryOp("*", y, z))) == "x + y * z"
+    assert format_expr(BinaryOp("-", BinaryOp("-", a, b), c)) == "a - b - c"
+
+    # Unary NOT wraps BinaryOp in parentheses
+    assert format_expr(UnaryOp("NOT", BinaryOp("AND", x, y))) == "NOT (x AND y)"
+    assert format_expr(UnaryOp("NOT", x)) == "NOT x"
+
+
+def test_type_inference_division_yields_float():
+    schema = [("a", DType.INT), ("b", DType.INT), ("c", DType.FLOAT)]
+    assert _infer_expr_dtype(BinaryOp("/", ColumnRef(None, "a"), ColumnRef(None, "b")), schema) == DType.FLOAT
+    assert _infer_expr_dtype(BinaryOp("/", ColumnRef(None, "a"), ColumnRef(None, "c")), schema) == DType.FLOAT
+    assert _infer_expr_dtype(BinaryOp("/", Literal(10, DType.INT), Literal(2, DType.INT)), schema) == DType.FLOAT
+
+
+def test_type_inference_numeric_coercion():
+    schema = [("a", DType.INT), ("b", DType.FLOAT), ("s", DType.STRING)]
+    # INT + INT -> INT
+    assert _infer_expr_dtype(BinaryOp("+", ColumnRef(None, "a"), ColumnRef(None, "a")), schema) == DType.INT
+    # INT * INT -> INT
+    assert _infer_expr_dtype(BinaryOp("*", ColumnRef(None, "a"), ColumnRef(None, "a")), schema) == DType.INT
+    # INT + FLOAT -> FLOAT
+    assert _infer_expr_dtype(BinaryOp("+", ColumnRef(None, "a"), ColumnRef(None, "b")), schema) == DType.FLOAT
+    # STRING + STRING -> STRING
+    assert _infer_expr_dtype(BinaryOp("+", ColumnRef(None, "s"), ColumnRef(None, "s")), schema) == DType.STRING
+    # Comparisons -> BOOL
+    assert _infer_expr_dtype(BinaryOp("=", ColumnRef(None, "a"), ColumnRef(None, "b")), schema) == DType.BOOL
+    assert _infer_expr_dtype(BinaryOp("<", ColumnRef(None, "a"), ColumnRef(None, "b")), schema) == DType.BOOL
+
+
+def test_type_inference_column_scoping():
+    schema = [
+        ("customer.id", DType.STRING),
+        ("orders.id", DType.INT),
+        ("unqualified_col", DType.FLOAT),
+    ]
+    # Scoped column reference matches canonical table prefix
+    assert _infer_expr_dtype(ColumnRef(table="orders", name="id"), schema) == DType.INT
+    assert _infer_expr_dtype(ColumnRef(table="customer", name="id"), schema) == DType.STRING
+    # Unqualified resolution
+    assert _infer_expr_dtype(ColumnRef(table=None, name="unqualified_col"), schema) == DType.FLOAT
+    # Non-existent column falls back to STRING
+    assert _infer_expr_dtype(ColumnRef(table="other", name="id"), schema) == DType.STRING
+
+
+def test_type_inference_nested_and_none():
+    schema = [("x", DType.INT), ("y", DType.INT), ("z", DType.FLOAT)]
+    # None expression handling
+    assert _infer_expr_dtype(None, schema) == DType.STRING
+    assert _infer_expr_dtype(Literal(None, dtype=DType.INT), schema) == DType.INT
+    # Nested arithmetic (x + y) / z -> FLOAT
+    nested = BinaryOp("/", BinaryOp("+", ColumnRef(None, "x"), ColumnRef(None, "y")), ColumnRef(None, "z"))
+    assert _infer_expr_dtype(nested, schema) == DType.FLOAT
+    # Aggregates
+    assert _infer_expr_dtype(AggCall(func="count", arg=None), schema) == DType.INT
+    assert _infer_expr_dtype(AggCall(func="avg", arg=ColumnRef(None, "x")), schema) == DType.FLOAT
+    assert _infer_expr_dtype(AggCall(func="sum", arg=ColumnRef(None, "x")), schema) == DType.INT
+
