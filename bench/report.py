@@ -296,6 +296,21 @@ def generate_charts(
                         peak_memory_kb=float(r["peak_memory_kb"]),
                     )
                 )
+    elif results is None:
+        csv_file = Path("bench/results.csv")
+        if csv_file.exists():
+            with csv_file.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for r in reader:
+                    records.append(
+                        BenchmarkRecord(
+                            query=r["query"],
+                            configuration=r["configuration"],
+                            runtime_ms=float(r["runtime_ms"]),
+                            rows_scanned=int(r["rows_scanned"]),
+                            peak_memory_kb=float(r["peak_memory_kb"]),
+                        )
+                    )
 
     # 2. Generate runtime_comparison.png
     if records:
@@ -412,16 +427,27 @@ def generate_charts(
 def main() -> None:
     """CLI runner to execute benchmark pipeline and export results/charts."""
     parser = argparse.ArgumentParser(description="Query Compiler Benchmark Runner")
-    parser.add_argument("--scale", choices=["tiny", "bench"], default="tiny", help="Dataset scale")
+    parser.add_argument("--scale", choices=["tiny", "bench"], default="bench", help="Dataset scale")
     parser.add_argument("--runs", type=int, default=3, help="Number of timed runs")
     parser.add_argument("--warmup", type=int, default=1, help="Number of warmup runs")
     parser.add_argument("--output-csv", default="bench/results.csv", help="CSV export destination")
     parser.add_argument("--figures-dir", default="bench/figures", help="Directory for generated figures")
+    parser.add_argument("--from-csv", default=None, help="Generate charts from existing CSV without re-running benchmarks")
     args = parser.parse_args()
+
+    if args.from_csv:
+        print(f"Generating charts directly from {args.from_csv}...")
+        figures = generate_charts(args.from_csv, output_dir=args.figures_dir)
+        print(f"Chart generation status: {figures}")
+        docs_assets = Path("docs/assets")
+        docs_assets.mkdir(parents=True, exist_ok=True)
+        generate_charts(args.from_csv, output_dir=docs_assets)
+        return
 
     print(f"Generating {args.scale} dataset...")
     catalog = create_test_catalog(scale=args.scale)
     tables = generate_dataset(scale=args.scale)
+
 
     queries_dir = Path("tests/fixtures/queries")
     query_files = sorted(queries_dir.glob("q*.sql"))

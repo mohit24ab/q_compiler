@@ -1,5 +1,5 @@
 Limit[n=15]
-  Sort[keys=lineitem.quantity DESC]
+  Sort[keys=lineitem.quantity DESC, lineitem_id ASC]
     Project[lineitem.id AS lineitem_id, orders.id AS order_id, part.name AS part_name, part.retail_price AS retail_price, lineitem.quantity AS quantity, lineitem.extended_price AS extended_price]
       Filter[orders.order_status = 'F' AND part.size > 10]
         Join[kind=inner, cond=lineitem.part_id = part.id]

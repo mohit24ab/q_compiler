@@ -19,7 +19,9 @@ class Resolver:
         self.catalog = catalog
         self.schemas: dict[str, list[tuple[str, DType]]] = {}
         self.table_to_alias: dict[str, str] = {}
+        self.table_to_aliases: dict[str, list[str]] = {}
         self.alias_to_table: dict[str, str] = {}
+        self.physical_tables: dict[str, str] = {}
         self.relation_order: list[str] = []
 
     def add_table(self, table_name: str, alias: str | None = None) -> list[tuple[str, DType]]:
@@ -44,16 +46,37 @@ class Resolver:
         rel_key = alias if alias else table_name
         self.schemas[rel_key] = list(schema)
         self.relation_order.append(rel_key)
+        self.physical_tables[rel_key] = table_name
         if alias:
             self.table_to_alias[table_name] = alias
+            self.table_to_aliases.setdefault(table_name, []).append(alias)
             self.alias_to_table[alias] = table_name
+
+    def get_canonical_table(self, target_rel: str) -> str:
+        """Returns the canonical table name or alias to use in ColumnRef.
+
+        For self-joins where the physical table is registered under multiple aliases,
+        preserves the alias so scopes remain strictly isolated.
+        """
+        phys_table = self.physical_tables.get(target_rel, target_rel)
+        occurrences = [r for r, phys in self.physical_tables.items() if phys == phys_table]
+        if len(occurrences) > 1:
+            return target_rel
+        return self.alias_to_table.get(target_rel, target_rel)
 
     def resolve_column(self, name: str, table: str | None = None) -> ColumnRef:
         """Resolves a qualified or unqualified column reference against active schemas."""
         if table is not None:
             target_rel = table
             if target_rel not in self.schemas:
-                if table in self.table_to_alias and self.table_to_alias[table] in self.schemas:
+                aliases = self.table_to_aliases.get(table, [])
+                if len(aliases) > 1:
+                    raise SemanticError(
+                        f"Ambiguous table reference '{table}' across multiple aliases: {aliases}."
+                    )
+                elif len(aliases) == 1 and aliases[0] in self.schemas:
+                    target_rel = aliases[0]
+                elif table in self.table_to_alias and self.table_to_alias[table] in self.schemas:
                     target_rel = self.table_to_alias[table]
                 else:
                     raise SemanticError(f"Table '{table}' not found in active scope.")
@@ -62,7 +85,7 @@ class Resolver:
             col_names = [col_name for col_name, _ in rel_schema]
             if name not in col_names:
                 raise SemanticError(f"Column '{name}' not found in table '{table}'.")
-            canonical_table = self.alias_to_table.get(target_rel, target_rel)
+            canonical_table = self.get_canonical_table(target_rel)
             return ColumnRef(table=canonical_table, name=name)
         else:
             matches: list[str] = []
@@ -77,7 +100,7 @@ class Resolver:
                 raise SemanticError(
                     f"Ambiguous column reference '{name}' found across active tables: {matches}."
                 )
-            canonical_table = self.alias_to_table.get(matches[0], matches[0])
+            canonical_table = self.get_canonical_table(matches[0])
             return ColumnRef(table=canonical_table, name=name)
 
     def get_column_type(self, col: ColumnRef | str, table: str | None = None) -> DType:
@@ -89,8 +112,12 @@ class Resolver:
 
         if col_ref.table is not None:
             target_rel = col_ref.table
-            if target_rel not in self.schemas and target_rel in self.table_to_alias:
-                target_rel = self.table_to_alias[target_rel]
+            if target_rel not in self.schemas:
+                aliases = self.table_to_aliases.get(target_rel, [])
+                if len(aliases) == 1 and aliases[0] in self.schemas:
+                    target_rel = aliases[0]
+                elif target_rel in self.table_to_alias and self.table_to_alias[target_rel] in self.schemas:
+                    target_rel = self.table_to_alias[target_rel]
             if target_rel in self.schemas:
                 for c_name, dt in self.schemas[target_rel]:
                     if c_name == col_ref.name:
@@ -113,8 +140,12 @@ class Resolver:
     def get_schema(self, table_or_alias: str) -> list[tuple[str, DType]]:
         """Returns the schema for a table or alias."""
         target = table_or_alias
-        if target not in self.schemas and target in self.table_to_alias:
-            target = self.table_to_alias[target]
+        if target not in self.schemas:
+            aliases = self.table_to_aliases.get(target, [])
+            if len(aliases) == 1 and aliases[0] in self.schemas:
+                target = aliases[0]
+            elif target in self.table_to_alias and self.table_to_alias[target] in self.schemas:
+                target = self.table_to_alias[target]
         if target not in self.schemas:
             raise SemanticError(f"Table '{table_or_alias}' not found in active scope.")
         return list(self.schemas[target])

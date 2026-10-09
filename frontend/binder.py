@@ -81,12 +81,17 @@ def _bind_expr(
 
     if isinstance(e, exp.Cast):
         to_type = str(e.to.this).upper()
-        if to_type == "DATE":
+        if "DATE" in to_type or (hasattr(e.to, "is_type") and e.to.is_type("date")):
             val = e.this.this if isinstance(e.this, exp.Literal) else str(e.this)
-            return Literal(value=val, dtype=DType.DATE)
+            return Literal(value=str(val), dtype=DType.DATE)
     if isinstance(e, exp.Date):
         val = e.this.this if isinstance(e.this, exp.Literal) else str(e.this)
-        return Literal(value=val, dtype=DType.DATE)
+        return Literal(value=str(val), dtype=DType.DATE)
+    if isinstance(e, exp.Anonymous) and e.name.upper() == "DATE":
+        if e.expressions:
+            arg = e.expressions[0]
+            val = arg.this if isinstance(arg, exp.Literal) else str(arg)
+            return Literal(value=str(val), dtype=DType.DATE)
 
     if isinstance(e, exp.Literal):
         if e.is_string:
@@ -159,6 +164,12 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
     if not isinstance(ast, exp.Select):
         raise ValueError(f"Expected a SELECT query, got: {type(ast).__name__}")
 
+    # Check for unsupported OFFSET modifier
+    if ast.args.get("offset") is not None:
+        raise SemanticError("OFFSET is not supported by the query compiler.")
+
+    is_distinct = ast.args.get("distinct") is not None
+
     from_clause = ast.args.get("from_")
     if from_clause is None or from_clause.this is None:
         raise ValueError("Query must specify a FROM clause.")
@@ -193,6 +204,29 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
         joined_name = join_table.name
         joined_alias = join_table.alias if join_table.alias else None
 
+        side_str = (join_ast.side or "").upper()
+        kind_str = (join_ast.kind or "").upper()
+        method_str = (join_ast.args.get("method") or "").upper()
+        is_natural = method_str == "NATURAL" or bool(join_ast.args.get("natural"))
+        using_ast = join_ast.args.get("using")
+
+        # Validate unsupported join types explicitly
+        if side_str == "RIGHT" or kind_str == "RIGHT":
+            raise NotImplementedError("RIGHT JOIN is not supported by the query engine.")
+        if side_str == "FULL" or kind_str == "FULL":
+            raise NotImplementedError("FULL JOIN is not supported by the query engine.")
+        if "SEMI" in kind_str or "SEMI" in side_str:
+            raise NotImplementedError("SEMI JOIN is not supported by the query engine.")
+        if "ANTI" in kind_str or "ANTI" in side_str:
+            raise NotImplementedError("ANTI JOIN is not supported by the query engine.")
+
+        if side_str == "LEFT" or kind_str == "LEFT":
+            kind = "left"
+        elif kind_str in ("", "INNER", "CROSS") and side_str in ("", "INNER"):
+            kind = "inner"
+        else:
+            raise NotImplementedError(f"Join type '{side_str} {kind_str}'.strip() is not supported.")
+
         try:
             joined_schema = resolver.add_table(table_name=joined_name, alias=joined_alias)
         except KeyError as exc:
@@ -205,17 +239,57 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
             table_schema=joined_schema,
         )
 
+        right_rel = joined_alias if joined_alias else joined_name
+
         on_ast = join_ast.args.get("on")
         if on_ast is not None:
             condition = _bind_expr(on_ast, resolver, typechecker)
-            typechecker.check_no_aggregates(condition, context_name="JOIN ON")
-            typechecker.check_boolean_condition(condition, resolver, context_name="JOIN ON")
+        elif using_ast is not None:
+            conjuncts: list[Expr] = []
+            for item in using_ast:
+                u_name = item.name if hasattr(item, "name") and item.name else str(item.this)
+                right_ref = resolver.resolve_column(name=u_name, table=right_rel)
+                left_matches = [
+                    rel for rel in resolver.relation_order
+                    if rel != right_rel and any(c == u_name for c, _ in resolver.schemas[rel])
+                ]
+                if len(left_matches) == 0:
+                    raise SemanticError(f"Column '{u_name}' in USING clause not found in left tables.")
+                if len(left_matches) > 1:
+                    raise SemanticError(
+                        f"Ambiguous column reference '{u_name}' in USING clause across left tables: {left_matches}."
+                    )
+                left_ref = resolver.resolve_column(name=u_name, table=left_matches[0])
+                conjuncts.append(BinaryOp(op="=", left=left_ref, right=right_ref))
+
+            condition = conjuncts[0]
+            for conj in conjuncts[1:]:
+                condition = BinaryOp(op="AND", left=condition, right=conj)
+        elif is_natural:
+            right_cols = [c for c, _ in joined_schema]
+            conjuncts = []
+            for c_name in right_cols:
+                left_matches = [
+                    rel for rel in resolver.relation_order
+                    if rel != right_rel and any(c == c_name for c, _ in resolver.schemas[rel])
+                ]
+                if len(left_matches) == 1:
+                    left_ref = resolver.resolve_column(name=c_name, table=left_matches[0])
+                    right_ref = resolver.resolve_column(name=c_name, table=right_rel)
+                    conjuncts.append(BinaryOp(op="=", left=left_ref, right=right_ref))
+                elif len(left_matches) > 1:
+                    raise SemanticError(f"Ambiguous common column reference '{c_name}' in NATURAL JOIN.")
+            if conjuncts:
+                condition = conjuncts[0]
+                for conj in conjuncts[1:]:
+                    condition = BinaryOp(op="AND", left=condition, right=conj)
+            else:
+                condition = Literal(value=True, dtype=DType.BOOL)
         else:
             condition = Literal(value=True, dtype=DType.BOOL)
 
-        side_str = (join_ast.side or "").upper()
-        kind_str = (join_ast.kind or "").upper()
-        kind = "left" if (side_str == "LEFT" or kind_str == "LEFT") else "inner"
+        typechecker.check_no_aggregates(condition, context_name="JOIN ON")
+        typechecker.check_boolean_condition(condition, resolver, context_name="JOIN ON")
 
         current_plan = Join(
             left=current_plan,
@@ -305,17 +379,26 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
             current_plan = Filter(child=current_plan, predicate=having_pred)
 
     select_aliases = {se.alias for se in select_items if isinstance(se, exp.Alias)}
-    project_exprs: list[tuple[Expr, str]] = []
-    is_wildcard = any(isinstance(e, exp.Star) for e in select_items)
+    user_project_exprs: list[tuple[Expr, str]] = []
+    seen_aliases: dict[str, int] = {}
 
-    if is_wildcard:
-        for rel_name in resolver.relation_order:
-            canonical_table = resolver.alias_to_table.get(rel_name, rel_name)
-            for col_name, _ in resolver.schemas[rel_name]:
-                project_exprs.append((ColumnRef(table=canonical_table, name=col_name), col_name))
-    else:
-        for se in select_items:
-            if isinstance(se, exp.Alias):
+    def deduplicate_alias(cand: str) -> str:
+        if cand not in seen_aliases:
+            seen_aliases[cand] = 0
+            return cand
+        seen_aliases[cand] += 1
+        return f"{cand}_{seen_aliases[cand]}"
+
+    for se in select_items:
+        if isinstance(se, exp.Star):
+            for rel_name in resolver.relation_order:
+                canonical_table = resolver.get_canonical_table(rel_name)
+                for col_name, _ in resolver.schemas[rel_name]:
+                    final_alias = deduplicate_alias(col_name)
+                    user_project_exprs.append((ColumnRef(table=canonical_table, name=col_name), final_alias))
+        else:
+            is_explicit = isinstance(se, exp.Alias)
+            if is_explicit:
                 alias = se.alias
                 expr_ast = se.this
             elif isinstance(se, exp.Column):
@@ -329,26 +412,38 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
                 alias = se.sql()
                 expr_ast = se
 
+            if not is_explicit:
+                alias = deduplicate_alias(alias)
+            else:
+                seen_aliases[alias] = seen_aliases.get(alias, 0)
+
             if (has_group_by or has_aggs) and isinstance(expr_ast, exp.AggFunc):
-                col_ref = ColumnRef(table=None, name=alias)
-                project_exprs.append((col_ref, alias))
+                bound_agg = _bind_agg(expr_ast, resolver, typechecker)
+                resolved_agg_alias = agg_call_to_alias.get(bound_agg, alias)
+                col_ref = ColumnRef(table=None, name=resolved_agg_alias)
+                user_project_exprs.append((col_ref, alias))
             else:
                 bound_e = _bind_expr(expr_ast, resolver, typechecker)
-                project_exprs.append((bound_e, alias))
+                user_project_exprs.append((bound_e, alias))
 
-    user_project_exprs = list(project_exprs)
+    project_exprs = list(user_project_exprs)
     extra_order_proj_aliases: list[str] = []
-    if order_clause is not None and (has_group_by or has_aggs):
-        existing_proj_aliases = {alias for _, alias in project_exprs}
-        for ordered in order_clause.expressions:
-            for agg_node in ordered.find_all(exp.AggFunc):
-                bound_agg = _bind_agg(agg_node, resolver, typechecker)
-                if bound_agg in agg_call_to_alias:
-                    agg_alias = agg_call_to_alias[bound_agg]
-                    if agg_alias not in existing_proj_aliases:
-                        project_exprs.append((ColumnRef(table=None, name=agg_alias), agg_alias))
-                        existing_proj_aliases.add(agg_alias)
-                        extra_order_proj_aliases.append(agg_alias)
+
+    if order_clause is not None:
+        if any(t.text.upper() == "NULLS" for t in sqlglot.tokenize(sql)):
+            raise SemanticError("NULLS FIRST / NULLS LAST ordering is not supported by the IR.")
+
+        if has_group_by or has_aggs:
+            existing_proj_aliases = {alias for _, alias in project_exprs}
+            for ordered in order_clause.expressions:
+                for agg_node in ordered.find_all(exp.AggFunc):
+                    bound_agg = _bind_agg(agg_node, resolver, typechecker)
+                    if bound_agg in agg_call_to_alias:
+                        agg_alias = agg_call_to_alias[bound_agg]
+                        if agg_alias not in existing_proj_aliases:
+                            project_exprs.append((ColumnRef(table=None, name=agg_alias), agg_alias))
+                            existing_proj_aliases.add(agg_alias)
+                            extra_order_proj_aliases.append(agg_alias)
 
     proj_aliases = {alias: expr for expr, alias in project_exprs}
     agg_aliases = {alias for _, alias in aggs}
@@ -366,18 +461,44 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
     current_plan = Project(child=current_plan, exprs=project_exprs)
 
+    # Lower SELECT DISTINCT to Aggregate with group_keys over projected columns
+    if is_distinct:
+        distinct_group_keys = [ColumnRef(table=None, name=alias) for _, alias in project_exprs]
+        current_plan = Aggregate(
+            child=current_plan,
+            group_keys=distinct_group_keys,
+            aggs=[],
+        )
+
     if order_clause is not None:
         sort_keys: list[tuple[Expr, bool]] = []
+        child_schema_dict = dict(current_plan.schema())
+        existing_plan_aliases = set(child_schema_dict.keys())
+
         for ordered in order_clause.expressions:
             is_desc = bool(ordered.args.get("desc", False))
             order_ast = ordered.this
-            if isinstance(order_ast, exp.Column) and not order_ast.table:
+
+            # Positional ORDER BY (e.g. ORDER BY 2)
+            if isinstance(order_ast, exp.Literal) and order_ast.is_number and not order_ast.is_string:
+                pos = int(order_ast.this)
+                if pos < 1 or pos > len(user_project_exprs):
+                    raise SemanticError(
+                        f"ORDER BY position {pos} is out of range (must be between 1 and {len(user_project_exprs)})."
+                    )
+                target_expr, target_alias = user_project_exprs[pos - 1]
+                if target_alias in select_aliases:
+                    sort_expr = ColumnRef(table=None, name=target_alias)
+                else:
+                    sort_expr = target_expr
+
+            elif isinstance(order_ast, exp.Column) and not order_ast.table:
                 if order_ast.name in select_aliases:
                     sort_expr = ColumnRef(table=None, name=order_ast.name)
                 elif order_ast.name in proj_aliases:
                     try:
                         sort_expr = resolver.resolve_column(name=order_ast.name)
-                    except ValueError:
+                    except (SemanticError, ValueError):
                         sort_expr = ColumnRef(table=None, name=order_ast.name)
                 else:
                     sort_expr = _bind_expr(order_ast, resolver, typechecker)
@@ -390,6 +511,35 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
                 return e
 
             sort_expr = transform_expr_post_order(sort_expr, _map_agg_to_colref)
+
+            # Ensure any column referenced by Sort is present in current_plan
+            # If not present in current_plan (ORDER BY column not in SELECT list), pass it through
+            def _rewrite_missing_colref(e: Expr) -> Expr:
+                nonlocal current_plan
+                if not (has_group_by or has_aggs) and isinstance(e, ColumnRef):
+                    # Check if directly in current_plan schema
+                    if e.name in existing_plan_aliases:
+                        return e
+                    if e.table:
+                        qname = f"{e.table}.{e.name}"
+                        if qname in existing_plan_aliases:
+                            return e
+                    # If current_plan is Project, check if already in exprs, else append as hidden projection
+                    if isinstance(current_plan, Project):
+                        for p_expr, p_alias in current_plan.exprs:
+                            if p_expr == e:
+                                if p_alias == e.name:
+                                    return e
+                                return ColumnRef(table=None, name=p_alias)
+                        hidden_alias = f"__ord_hidden_{len(extra_order_proj_aliases)}"
+                        new_exprs = list(current_plan.exprs) + [(e, hidden_alias)]
+                        current_plan = Project(child=current_plan.child, exprs=new_exprs)
+                        existing_plan_aliases.add(hidden_alias)
+                        extra_order_proj_aliases.append(hidden_alias)
+                        return ColumnRef(table=None, name=hidden_alias)
+                return e
+
+            sort_expr = transform_expr_post_order(sort_expr, _rewrite_missing_colref)
             sort_keys.append((sort_expr, is_desc))
 
         if has_group_by or has_aggs:
@@ -416,6 +566,8 @@ def parse_and_bind(sql: str, catalog: Catalog) -> PlanNode:
 
     limit_clause = ast.args.get("limit")
     if limit_clause is not None:
+        if limit_clause.args.get("offset") is not None:
+            raise SemanticError("OFFSET is not supported by the query compiler.")
         limit_expr = limit_clause.expression
         if not isinstance(limit_expr, exp.Literal) or not limit_expr.is_number:
             raise ValueError(f"Expected integer numeric LIMIT, got: {limit_expr}")
