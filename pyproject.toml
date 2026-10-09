@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A toy relational query compiler and differential execution engine"
 requires-python = ">=3.10"
 dependencies = [
+    "numpy>=1.24.0",
     "pyarrow>=14.0.0",
     "sqlglot>=20.0.0",
     "pytest>=7.0.0",

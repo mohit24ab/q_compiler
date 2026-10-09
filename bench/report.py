@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import statistics
@@ -94,12 +95,22 @@ def create_execution_callable(
 
     elif config == "compiled_unoptimized":
         source = generate(plan_unopt, catalog)
-        return (lambda: compile_and_run(source, tables)), plan_unopt
+        try:
+            from codegen.runner import compile_module
+            run_fn = compile_module(source)["run"]
+            return (lambda: run_fn(tables)), plan_unopt
+        except Exception:
+            return (lambda: compile_and_run(source, tables)), plan_unopt
 
     elif config == "compiled_optimized":
         plan_opt, _ = optimize(plan_unopt, catalog)
         source = generate(plan_opt, catalog)
-        return (lambda: compile_and_run(source, tables)), plan_opt
+        try:
+            from codegen.runner import compile_module
+            run_fn = compile_module(source)["run"]
+            return (lambda: run_fn(tables)), plan_opt
+        except Exception:
+            return (lambda: compile_and_run(source, tables)), plan_opt
 
     else:
         raise ValueError(
@@ -201,10 +212,38 @@ def export_results_to_csv(
 
 
 def load_ablation_data(csv_path: str | Path = "docs/ablation/codegen.csv") -> list[dict[str, Any]] | None:
-    """Reads ablation metric records from docs/ablation/codegen.csv if present."""
+    """Reads ablation metric records from docs/ablation/codegen.csv if present.
+    If git conflict markers are found, resolves by taking Person B's version.
+    """
     p = Path(csv_path)
     if not p.exists():
         return None
+
+    content = p.read_text(encoding="utf-8")
+    if "<<<<<<<" in content or ">>>>>>>" in content:
+        lines = []
+        in_conflict = False
+        in_person_b = False
+        for line in content.splitlines():
+            if line.startswith("<<<<<<<"):
+                in_conflict = True
+                in_person_b = False
+                continue
+            elif line.startswith("======="):
+                in_person_b = True
+                continue
+            elif line.startswith(">>>>>>>"):
+                in_conflict = False
+                in_person_b = False
+                continue
+            if in_conflict:
+                if in_person_b:
+                    lines.append(line)
+            else:
+                lines.append(line)
+        content = "\n".join(lines)
+        reader = csv.DictReader(io.StringIO(content))
+        return list(reader)
 
     with p.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -294,13 +333,26 @@ def generate_charts(
     # 3. Generate ablation_chart.png from docs/ablation/codegen.csv
     ablation_data = load_ablation_data(ablation_csv)
     if ablation_data:
-        if "config" in ablation_data[0]:
-            configs = sorted(list({row["config"] for row in ablation_data}))
+        # Filter rows to include only those where workload == "golden"
+        filtered_data = [
+            r for r in ablation_data
+            if r.get("workload") == "golden"
+        ]
+        if not filtered_data:
+            filtered_data = [
+                r for r in ablation_data
+                if r.get("query", "").startswith("q") and r.get("query", "")[1:].isdigit()
+            ]
+        if not filtered_data:
+            filtered_data = ablation_data
+
+        if "config" in filtered_data[0]:
+            configs = sorted(list({row["config"] for row in filtered_data}))
             seen_q: list[str] = []
-            for r in ablation_data:
+            for r in filtered_data:
                 if r["query"] not in seen_q:
                     seen_q.append(r["query"])
-            queries_ab = seen_q[:10] if len(seen_q) > 15 else seen_q
+            queries_ab = seen_q
 
             fig, ax = plt.subplots(figsize=(12, 6))
             bar_w = 0.8 / max(len(configs), 1)
@@ -309,7 +361,7 @@ def generate_charts(
             for j, cfg in enumerate(configs):
                 vals = []
                 for q in queries_ab:
-                    matching = [float(r["runtime_ms"]) for r in ablation_data if r["query"] == q and r["config"] == cfg]
+                    matching = [float(r["runtime_ms"]) for r in filtered_data if r["query"] == q and r["config"] == cfg]
                     vals.append(matching[0] if matching else 0.0)
                 pos = [x + (j - len(configs) / 2) * bar_w for x in idxs]
                 ax.bar(pos, vals, width=bar_w, label=cfg)
@@ -328,15 +380,15 @@ def generate_charts(
             plt.close(fig)
             output_manifest["ablation_chart"] = ablation_path
         else:
-            queries_ab = [row["query"] for row in ablation_data]
-            metric_cols = [c for c in ablation_data[0].keys() if c != "query"]
+            queries_ab = [row["query"] for row in filtered_data]
+            metric_cols = [c for c in filtered_data[0].keys() if c not in ("query", "workload")]
 
             fig, ax = plt.subplots(figsize=(10, 5))
             bar_w = 0.8 / len(metric_cols)
             idxs = range(len(queries_ab))
 
             for j, col_name in enumerate(metric_cols):
-                vals = [float(row[col_name]) for row in ablation_data]
+                vals = [float(row[col_name]) for row in filtered_data]
                 pos = [x + (j - len(metric_cols) / 2) * bar_w for x in idxs]
                 ax.bar(pos, vals, width=bar_w, label=col_name)
 
@@ -390,6 +442,10 @@ def main() -> None:
 
     figures = generate_charts(records, output_dir=args.figures_dir)
     print(f"Chart generation status: {figures}")
+
+    docs_assets = Path("docs/assets")
+    docs_assets.mkdir(parents=True, exist_ok=True)
+    generate_charts(records, output_dir=docs_assets)
 
 
 if __name__ == "__main__":

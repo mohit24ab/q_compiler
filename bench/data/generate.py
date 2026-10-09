@@ -168,10 +168,10 @@ def generate_dataset(
         num_orders = 250
         num_lineitems = 1000
     elif scale == "bench":
-        num_cust = 5000
-        num_parts = 5000
-        num_orders = 25000
-        num_lineitems = 100000
+        num_cust = 50000
+        num_parts = 50000
+        num_orders = 250000
+        num_lineitems = 1000000
     else:
         raise ValueError(f"Unknown scale: {scale}. Expected 'tiny' or 'bench'.")
 

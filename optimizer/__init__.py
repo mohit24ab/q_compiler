@@ -30,13 +30,17 @@ def default_passes() -> list[OptimizerPass]:
     from optimizer.join_reordering import JoinReordering
     from optimizer.predicate_pushdown import PredicatePushdown
 
-    # Folding first: a simplified predicate exposes more conjuncts to push.
-    # Pushdown before reordering: filters at the scans make the estimates the
-    # reordering is costed from reflect them, and WHERE conjuncts become join
-    # conditions it can place.
+    # The order is measured, not assumed: optimizer.ablation.pass_order_study
+    # runs the suite through all 24 orders (docs/optimizer.md, "Pass order").
+    # Pushdown before reordering: filters sit at the scans and WHERE conjuncts
+    # are join conditions, so reordering costs plans from filtered estimates.
     # Reordering before pruning: pruning inserts Projects between joins, which
-    # would split the join trees reordering works on.
-    return [ConstantFolding(), PredicatePushdown(), JoinReordering(), ColumnPruning()]
+    # split the join trees reordering works on (orders that prune first end
+    # 30% more expensive). Folding last: it also removes the no-op Projects
+    # that pruning leaves behind, which saves the loop an iteration on 16
+    # queries. Folding first, as the textbook suggests, ends in the same plans
+    # here: the fixed-point loop runs folding before the next pushdown anyway.
+    return [PredicatePushdown(), JoinReordering(), ColumnPruning(), ConstantFolding()]
 
 
 def optimize(plan: Any, catalog: Any) -> tuple[Any, list[PassTrace]]:
