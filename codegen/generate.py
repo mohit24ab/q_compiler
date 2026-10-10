@@ -51,7 +51,8 @@ def generate(plan, catalog=None, mode: str = "auto", fuse: bool = True) -> str:
     return _generate_compiled(plan, catalog, fuse)
 
 
-_HELPERS = ("as_table", "read_column", "build_table", "like", "take_or_null")
+_HELPERS = ("as_table", "read_column", "build_table", "like", "take_or_null", "parse_dates",
+            "to_text")
 
 
 def _generate_compiled(plan, catalog, fuse: bool) -> str:

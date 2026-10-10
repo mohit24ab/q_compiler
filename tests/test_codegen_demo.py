@@ -36,7 +36,17 @@ def test_demo_takes_a_sql_string_and_explains_alias_resolution(capsys):
     code, out = run_main([sql, "--runs", "1", "--color", "never"], capsys)
     assert code == 0
     assert "alias qualifiers resolved to table names" in out
+    assert any(f"c {arrow} customer, o {arrow} orders" in out for arrow in ("->", "→"))
     assert "3 rows" in out
+
+
+def test_alias_note_only_when_the_sql_has_table_aliases(capsys):
+    # a column named `s` is not a table alias
+    sql = "SELECT nation, COUNT(*) AS s FROM customer GROUP BY nation ORDER BY s DESC LIMIT 2"
+    code, out = run_main([sql, "--runs", "1", "--color", "never"], capsys)
+    assert code == 0 and "alias qualifiers" not in out
+    assert demo.sql_aliases("SELECT x.id FROM orders x JOIN customer ON x.cust_id = customer.id") \
+        == {"x": "orders"}
 
 
 def test_ascii_mode_without_colour_is_plain_ascii(capsys):
