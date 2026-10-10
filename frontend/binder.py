@@ -29,6 +29,7 @@ _BINARY_OPS = {
     exp.GTE: ">=",
     exp.And: "AND",
     exp.Or: "OR",
+    exp.DPipe: "||",
 }
 
 _AGG_FUNCS = {"sum", "count", "avg", "min", "max"}
@@ -128,6 +129,26 @@ def _bind_expr(
         if typechecker is not None:
             typechecker.infer_type(res_op, scope)
         return res_op
+
+    if isinstance(e, exp.DPipe):
+        left = _bind_expr(e.this, scope, typechecker)
+        right = _bind_expr(e.expression, scope, typechecker)
+        bin_op = BinaryOp(op="||", left=left, right=right)
+        if typechecker is not None:
+            typechecker.infer_type(bin_op, scope)
+        return bin_op
+
+    if isinstance(e, exp.Concat):
+        args = ([e.this] if e.this is not None else []) + (e.expressions or [])
+        if not args:
+            return Literal(value="", dtype=DType.STRING)
+        res = _bind_expr(args[0], scope, typechecker)
+        for arg in args[1:]:
+            right = _bind_expr(arg, scope, typechecker)
+            res = BinaryOp(op="||", left=res, right=right)
+            if typechecker is not None:
+                typechecker.infer_type(res, scope)
+        return res
 
     if type(e) in _BINARY_OPS:
         op = _BINARY_OPS[type(e)]

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-import duckdb
+from typing import Any
 import pytest
+
+duckdb = pytest.importorskip("duckdb")
 
 from bench.data.generate import generate_dataset
 
@@ -12,7 +14,7 @@ QUERY_IDS = [f"q{i:02d}" for i in range(1, 21)]
 
 
 @pytest.fixture(scope="module")
-def duckdb_con() -> duckdb.DuckDBPyConnection:
+def duckdb_con() -> Any:
     """Registers tiny star-schema dataset in an in-memory DuckDB connection."""
     con = duckdb.connect()
     tables = generate_dataset(scale="tiny", seed=42)
