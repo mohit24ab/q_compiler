@@ -405,23 +405,23 @@ Person A's dataset at scale `tiny` (customer 100, part 100, orders 250, lineitem
 
 | node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all nodes | 101 | 1.07 | 1.98 | 7.14 | 90% | 25 | 17 |
+| all nodes | 101 | 1.07 | 2.19 | 7.14 | 89% | 25 | 17 |
 | Limit | 15 | 1.00 | 1.67 | 1.67 | 100% | 2 | 1 |
 | Sort | 15 | 1.48 | 2.88 | 2.88 | 80% | 5 | 5 |
 | Scan | 34 | 1.02 | 1.39 | 1.68 | 100% | 4 | 2 |
 | Project | 8 | 1.40 | 2.57 | 2.57 | 88% | 4 | 2 |
-| Join | 14 | 1.17 | 1.91 | 2.57 | 93% | 6 | 2 |
+| Join | 14 | 1.17 | 2.19 | 2.57 | 86% | 6 | 2 |
 | Aggregate | 8 | 1.04 | 3.94 | 3.94 | 88% | 2 | 0 |
 | Filter | 7 | 2.88 | 7.14 | 7.14 | 43% | 2 | 5 |
 
-90% of the 101 nodes are within 2x. The worst five:
+89% of the 101 nodes are within 2x. The worst five:
 
 | query | node | estimated | actual | q-error |
 |---|---|--:|--:|--:|
 | q17 | `Filter[count(*) >= 2]` | 107.1 | 15 | 7.14 |
 | q20 | `Aggregate[group=customer.mktsegment, customer.nation, aggs=count(*) AS item_count, sum(lineitem.extended_price) AS revenue]` | 118.2 | 30 | 3.94 |
 | q15 | `Filter[sum(orders.total_price) > 50000.0]` | 5.0 | 15 | 3.00 |
-| q19 | `Sort[keys=total_revenue DESC]` | 8.3 | 24 | 2.88 |
+| q19 | `Sort[keys=total_revenue DESC, part.brand ASC]` | 8.3 | 24 | 2.88 |
 |  | `Filter[sum(lineitem.quantity) > 50]` | 8.3 | 24 | 2.88 |
 
 * `q17`: the HAVING predicate reads an aggregate, which has no statistics, so it gets System R's 1/3.

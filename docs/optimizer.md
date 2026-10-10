@@ -191,9 +191,17 @@ whose FROM order crosses orders with nation):
 **Measured contribution.** 1.4x over the suite, and 1.29x without the comma join. On individual
 queries: the comma join runs 5.8x faster, the nine-way chain (planned greedily) 2.6x, the
 five-way join written fact-table-first 2.4x, and the three-way join filtered on `nation` 2.0x.
-On the golden queries it changes no plan. They join at most three tables, mostly in a sensible
-order already, and the one it used to improve, q10 (1.9x), ends in ORDER BY ... LIMIT, so its
-joins now stay as written (see the preconditions).
+On the golden queries it changes one plan: q10, which joins three tables and ends in
+ORDER BY ... LIMIT. Its ordering is total (`l.id` is lineitem's key and survives both FK joins),
+so the preconditions let it through, and it runs 1.87x faster compiled and about 1.5x faster
+interpreted at bench scale. Those are medians of five independent blocks, each interleaving the
+two plans sample by sample; q09, whose plan the change does not touch, measures 1.01x and 1.03x
+through the same harness, which is what sets the scale of the error bar. The compiled figure is
+steady (1.79x to 1.93x across blocks); the interpreted one is not (1.33x to 2.69x), so read it
+as "about 1.5x" and no finer. Timing the two plans in separate blocks instead of interleaved
+ones puts machine drift straight into the ratio: measured that way, queries whose plans are
+byte-identical register anywhere from 0.50x to 1.12x. The rest join at most three tables in a
+sensible order already.
 
 **How it is checked.** On 40 random join graphs (chains, stars, cycles, cliques, random trees)
 the dynamic program's plan costs exactly as much as the cheapest of every possible tree. A
@@ -346,10 +354,15 @@ is checked against execution, not only against expected plan shapes.
   lists. No folding of integer division.
 * **Join reordering.** Reordering never moves a join across a LEFT join. No cross product is
   introduced unless the graph forces one, even when one would be cheaper (two tiny dimensions
-  crossed first in a star query); that is the policy this phase asked for. Joins under a Sort or
-  Limit are not reordered, which costs q10 its 1.9x: if the team agrees that §7 should compare
-  tied rows as a set and accept any valid top-n, `JoinReordering(keep_row_order=False)` turns
-  them back on. The dynamic program is exponential: an 8-table clique (every pair joined) takes
+  crossed first in a star query); that is the policy this phase asked for. Joins under a Sort or Limit are
+  reordered only when the ordering is *total* -- when the sort keys contain a key of the rows
+  being sorted, so no two tie and the top-n is forced. `optimizer/keys.py` proves that from
+  catalog statistics; it is why q10 is reordered again (1.87x compiled) now that every golden query's
+  ORDER BY carries a unique tie-breaker. Note what this does *not* do: §7 is unchanged and still
+  compares ordered results row for row. A bare LIMIT with no ORDER BY, an ORDER BY whose keys all
+  repeat, and anything under an outer join stay guarded, as they must. The analysis is one-sided,
+  so a key it cannot prove -- a multi-column one, or a uniqueness the catalog does not record --
+  costs a rewrite, never an answer. The dynamic program is exponential: an 8-table clique (every pair joined) takes
   about a second to plan; chains, stars and the golden queries take milliseconds.
 * **Column pruning.** It doesn't insert a Project where that would hide a column from a
   qualified reference above, because how qualifiers survive a Project isn't settled between the

@@ -46,12 +46,19 @@ The pass leaves a region alone when:
     Reordering changes the order of a join's output columns, which only a
     Project or Aggregate above it makes irrelevant. The binder always puts
     a Project on top;
-  * a Sort or Limit is above it (``keep_row_order``, on by default).
-    Reordering changes the order of the join's output rows. Under a Sort
-    that only reorders rows whose sort keys tie, and under a Limit it
-    changes which rows are kept. Both are legal SQL, but Contract §7 asks
-    for identical rows in order under ORDER BY, and the team's differential
-    harness checks exactly that;
+  * a Sort or Limit is above it whose row order the reordering could be
+    observed through (``keep_row_order``, on by default). Reordering changes
+    the order of the join's output rows. Under a Sort that only reorders
+    rows whose sort keys tie, and under a Limit it changes which rows are
+    kept. Both are legal SQL, but Contract §7 asks for identical rows in
+    order under ORDER BY, and the team's differential harness checks exactly
+    that. A Sort whose keys contain a key of what it sorts is exempt: with
+    no two rows tied the sorted order is forced, so nothing below it shows
+    through, and a Limit above it keeps a forced top-n too. ``optimizer/
+    keys.py`` decides that, and only on evidence -- a column the catalog
+    reports as one value per row with no nulls, carried up through the joins
+    that cannot duplicate it. A bare LIMIT with no ORDER BY, and an ORDER BY
+    whose keys all repeat, stay guarded;
   * the best plan is not at least 1% cheaper than the current one. Equal
     cost alternatives are not worth a change, and this keeps the pass
     stable when it runs again on its own output.
@@ -67,6 +74,7 @@ from ir.nodes import Aggregate, Filter, Join, Limit, Project, Sort
 from optimizer.columns import column_refs, output_columns, resolves
 from optimizer.cost import CostModel
 from optimizer.expressions import TRUE, conjoin, split_conjuncts
+from optimizer.keys import ordering_is_total
 
 DP_LIMIT = 8
 MIN_GAIN = 0.01
@@ -262,7 +270,13 @@ class _Reorderer:
         else:
             inherited = True  # a node kind this pass doesn't know: assume order matters
         known = isinstance(node, (Project, Aggregate, Filter, Join))
-        ordered = rows_ordered or not known  # Sort, Limit, and node kinds this pass doesn't know
+        if isinstance(node, Sort) and self.keep_row_order and ordering_is_total(node, self.catalog):
+            # A total ordering re-determines the row order whatever order the
+            # rows arrive in, so no reordering below it is observable -- not
+            # even through a Limit above, whose top-n is then forced too.
+            ordered = False
+        else:
+            ordered = rows_ordered or not known  # Sort, Limit, and node kinds this pass doesn't know
         children = [self.visit(c, inherited, ordered) for c in node.children]
         if all(new is old for new, old in zip(children, node.children)):
             return node

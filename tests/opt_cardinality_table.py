@@ -213,7 +213,10 @@ def render() -> str:
 
 def main() -> None:
     OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text(render())
+    # Explicit utf-8: the report contains § and the test reads it as utf-8.
+    # Without this, regenerating on a Windows box whose locale is cp1252
+    # writes bytes the test then cannot decode.
+    OUT.write_text(render(), encoding="utf-8")
     print(f"wrote {OUT}")
 
 
