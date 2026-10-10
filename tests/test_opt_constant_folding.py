@@ -75,6 +75,8 @@ FOLDS = [
     ("division by zero", op("/", lit(1.0), lit(0)), op("/", lit(1.0), lit(0))),
     ("modulo", op("%", lit(7), lit(2)), op("%", lit(7), lit(2))),
     ("mixed-type comparison", op("<", lit("a"), lit(1)), op("<", lit("a"), lit(1))),
+    ("date not written YYYY-MM-DD", op("<", date("19950101"), date("1995-02-01")),
+     op("<", date("19950101"), date("1995-02-01"))),
     ("int64 overflow", op("*", lit(2**62), lit(4)), op("*", lit(2**62), lit(4))),
     ("unknown operator", op("LIKE", lit("ab"), lit("a%")), op("LIKE", lit("ab"), lit("a%"))),
     ("contradictions are a predicate rule, not a value rule",
@@ -122,6 +124,9 @@ SATISFIABLE = [
     ("same value, int and float", op("AND", op("=", X, lit(1)), op("=", X, lit(1.0)))),
     ("different columns", op("AND", op("=", X, lit(1)), op("=", Y, lit(2)))),
     ("mixed types are not guessed at", op("AND", op("=", X, lit("a")), op("=", X, lit(1)))),
+    # as strings '19950101' > '1995-02-01', but a DATE column reads it as 1995-01-01
+    ("a date not written YYYY-MM-DD is not guessed at",
+     op("AND", op(">=", X, lit("19950101")), op("<", X, lit("1995-02-01")))),
     ("qualified and unqualified are different columns",
      op("AND", op("=", col("x", "t"), lit(1)), op("=", X, lit(2)))),
 ]

@@ -17,8 +17,8 @@ import opt_ir  # noqa: F401
 import opt_query_suite as S
 import optimizer
 from ir.dtype import DType
-from ir.nodes import Aggregate, Filter, Join, Scan
-from opt_query_suite import SuiteCatalog, col, join, keep, lit, op, project, scan
+from ir.nodes import Aggregate, Filter, Join, Limit, Scan, Sort
+from opt_query_suite import SuiteCatalog, agg, col, join, keep, lit, op, project, scan
 from opt_reference_eval import assert_equivalent
 from optimizer.columns import column_refs
 from optimizer.cost import CostModel
@@ -387,6 +387,60 @@ def test_visible_column_order_is_left_alone():
     # the same join under a Project may be reordered
     wrapped = project(plan, *keep("l_id"))
     assert JoinReordering().apply(wrapped, S.CATALOG) is not wrapped
+
+
+def test_regions_under_a_sort_or_limit_are_left_alone():
+    # Reordering changes the order of a join's output rows: under a Sort, the order of
+    # rows whose keys tie; under a Limit, which rows are kept. Both are legal SQL, but
+    # Contract §7 compares the results of ORDER BY queries row for row.
+    region = star_query()
+    by_d3 = Sort(child=region, keys=[(col("d3_name"), False)])
+    counted = Aggregate(child=region.child, group_keys=[col("d3_name")], aggs=[(agg("count"), "n")])
+    for plan in (by_d3, Limit(child=by_d3, n=5), Limit(child=region, n=5),
+                 Sort(child=counted, keys=[(col("n"), True)])):
+        assert JoinReordering().apply(plan, STAR) is plan
+        assert JoinReordering(keep_row_order=False).apply(plan, STAR) is not plan
+
+
+def _top_five_by_d3_name():
+    """SELECT f_id, d2_name, d3_name FROM fact JOIN d2 ... JOIN d3 ... JOIN d1 ...
+    WHERE d1_id <= 10 ORDER BY d3_name LIMIT 5   -- many rows tie on d3_name"""
+    j = join(scan("fact"), scan("d2"), op("=", col("f_d2"), col("d2_id")))
+    j = join(j, scan("d3"), op("=", col("f_d3"), col("d3_id")))
+    j = join(j, scan("d1", pushed=op("<=", col("d1_id"), lit(10))), op("=", col("f_d1"), col("d1_id")))
+    ordered = Sort(child=project(j, *keep("f_id", "d2_name", "d3_name")), keys=[(col("d3_name"), False)])
+    return Limit(child=ordered, n=5)
+
+
+def test_reordering_under_a_limit_would_keep_other_rows():
+    # the negative control for the test above: with keep_row_order off, the LIMIT keeps
+    # a different five of the tied rows, and the §7 check fails
+    plan = _top_five_by_d3_name()
+    reordered = JoinReordering(keep_row_order=False).apply(plan, STAR)
+    assert reordered is not plan
+    with pytest.raises(AssertionError, match="ordered rows differ"):
+        assert_equivalent(plan, reordered, STAR_TABLES)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        final, _ = optimizer.optimize(plan, STAR)
+    assert_equivalent(plan, final, STAR_TABLES)
+
+
+def test_a_conjunct_over_three_tables_that_is_their_only_link():
+    # d1_id + d2_id = d3_id reads all three tables and no conjunct links two of them, so
+    # every plan needs a cross product. The DP found no split into linked halves and
+    # raised KeyError; it now plans the region again with cross products allowed.
+    region = join(join(scan("d2"), scan("d1", pushed=op("<=", col("d1_id"), lit(5))), TRUE), scan("d3"),
+                  op("=", op("+", col("d1_id"), col("d2_id")), col("d3_id")))
+    plan = project(region, *keep("d1_name", "d2_name", "d3_name"))
+    graph = build_graph(leaves_of(region), region_conjuncts(region), STAR)
+    best = plan_joins(graph, CostModel(STAR))
+    assert best.algorithm == "dp"
+    assert [j.condition == TRUE for j in joins(best.plan)].count(True) == 1
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        final, _ = optimizer.optimize(plan, STAR)
+    assert_equivalent(plan, final, STAR_TABLES)
 
 
 def test_ambiguous_references_are_left_alone():
