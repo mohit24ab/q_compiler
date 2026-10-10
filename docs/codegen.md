@@ -54,6 +54,8 @@ The semantics are copied from `runtime/expr_eval.py`, the interpreter, which is 
   generation time. Anything else (a STRING column) is parsed row by row with
   `runtime.vec.parse_dates`, and only where both sides are present, as the interpreter
   does. `np.datetime64` is never the parser: it reads `'20240105'` as the year 20240105;
+* `a || b` is `f"{a}{b}"`. A side that isn't a STRING becomes the text of its Python
+  value first (`runtime.vec.to_text`): `1`, `2.5`, `True`, `2024-01-05`;
 * a constant GROUP BY key (`'all'`, `1+1`) never splits a group. With only constant keys
   there is one group, or none when the input is empty (a global aggregate still returns
   one row). A constant join key (`o.id / 0 = c.id`) is a column like any other;

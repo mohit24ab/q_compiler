@@ -8,6 +8,8 @@
 4. A relation with rows but no columns lost its row count.
 5. DATE vs STRING comparisons disagreed between the engines.
 6. The stand-in IR is gone.
+7. (Since A's binder accepts `||` on any type, main @ a2ed35c) generated code concatenated
+   only STRINGs; `id || name` crashed.
 
 The differential suites run every plan in codegen_fixtures.REVIEW_PLANS through both
 engines; the tests here pin the answers by hand, so a bug shared by both engines shows.
@@ -149,6 +151,7 @@ SQL_CASES = [
     "SELECT COUNT(*) AS n FROM customer c LEFT JOIN orders o ON c.id / 0 = o.cust_id",
     "SELECT COUNT('x\nprint(1)\n') AS c, MIN('a\n#') AS m FROM customer",
     "SELECT nation, MAX('\"\"\"\n') AS m, COUNT(*) AS n FROM customer GROUP BY nation, 'a\nb'",
+    "SELECT id || '-' || name AS s, acctbal || '' AS a, (id > 3) || nation AS b FROM customer",
 ]
 
 
@@ -256,6 +259,15 @@ def test_strings_that_are_not_dates_fail_alike_and_only_when_compared():
         interpret(bad, tables)
     with pytest.raises(Exception, match="Invalid isoformat"):
         compile_and_run(generate(bad, Catalog(), mode="compiled"), tables)
+
+
+# ------------------------------------------------------------------ 7. || on any type
+
+def test_concat_writes_each_value_as_the_interpreter_does():
+    # sales row 1: id 1, region US, amount 10.0, qty 1, day 2024-01-01
+    assert rows("concat_every_type")[0] == (
+        "1US", "10.0!", "False2024-01-01", "72.5True", "2024-01-051")
+    assert rows("concat_every_type")[3][1] is None      # amount is NULL: so is the result
 
 
 # ------------------------------------------------------------------ 6. the real IR only

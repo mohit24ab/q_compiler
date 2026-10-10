@@ -160,7 +160,7 @@ class ExprGen:
         can drop the array part of an expression (TRUE OR <x> is simply TRUE).
         """
         for node in ast.walk(ast.parse(src, mode="eval")):
-            if isinstance(node, ast.Name) and node.id not in ("np", "float", "parse_dates") \
+            if isinstance(node, ast.Name) and node.id not in ("np", "float", "parse_dates", "to_text") \
                     and node.id not in self.scalar_temps:
                 return False
         return True
@@ -228,7 +228,11 @@ class ExprGen:
         if op in _CMP:
             return self.code(f"({a.v} {_CMP[op]} {b.v})", ok)
         if op == "||":
-            return self.code(f"({a.v} + {b.v})", ok)
+            # the interpreter writes f"{a}{b}": a side that isn't a STRING becomes the text
+            # of its Python value first (1, 2.5, True, 2024-01-05)
+            av = a.v if self.dtype(expr.left).name == "STRING" else f"to_text({a.v})"
+            bv = b.v if self.dtype(expr.right).name == "STRING" else f"to_text({b.v})"
+            return self.code(f"({av} + {bv})", ok)
         if op in ("LIKE", "NOT LIKE"):
             if not b.scalar or a.scalar:
                 raise CodegenError("LIKE needs a column on the left and a literal pattern")

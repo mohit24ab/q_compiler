@@ -437,5 +437,14 @@ REVIEW_PLANS = {
         _events_where(op("=", lit("20240105", DType.DATE), col("day"))), False),
     "string_column_after_date_literal": (
         _events_where(op(">=", col("txt"), lit("2024-02-01", DType.DATE))), False),
+    # `||` on a side that isn't a STRING (the binder accepts it since main @ a2ed35c)
+    "concat_every_type": (
+        Project(child=scan("sales"), exprs=[
+            (op("||", col("id"), col("region")), "int_str"),
+            (op("||", col("amount"), lit("!", DType.STRING)), "float_str"),
+            (op("||", op(">", col("qty"), lit(3)), col("day")), "bool_date"),
+            (op("||", lit(7), op("||", lit(2.5, DType.FLOAT), lit(True, DType.BOOL))), "constants"),
+            (op("||", lit("2024-01-05", DType.DATE), col("qty")), "date_int")]),
+        False),
 }
 JOIN_AGG_PLANS.update(REVIEW_PLANS)

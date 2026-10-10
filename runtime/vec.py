@@ -69,6 +69,14 @@ def parse_dates(values, ok=None):
                      for v, p in zip(values.tolist(), present)], dtype="datetime64[D]")
 
 
+def to_text(values):
+    """A non-STRING operand of `||` (an array, or one value) as text, written exactly as
+    the interpreter writes it: f"{v}" of the Python value, e.g. 1, 2.5, True, 2024-01-05."""
+    if np.ndim(values) == 0:
+        return f"{values.item() if isinstance(values, np.generic) else values}"
+    return np.array([f"{v}" for v in values.tolist()], dtype=object)
+
+
 def take_or_null(values: np.ndarray, ok, idx: np.ndarray):
     """values[idx] where idx == -1 means "no row" (LEFT JOIN padding) and yields NULL."""
     present = idx >= 0
