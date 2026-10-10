@@ -1,5 +1,5 @@
 Limit[n=10]
-  Sort[keys=part.retail_price ASC]
+  Sort[keys=part.retail_price ASC, part.id ASC]
     Project[part.id AS id, part.name AS name, part.mfgr AS mfgr, part.brand AS brand, part.retail_price AS retail_price, part.retail_price * 1.15 AS taxed_price]
       Filter[part.size <= 25 AND part.mfgr = 'Manufacturer#1']
         Scan[part]

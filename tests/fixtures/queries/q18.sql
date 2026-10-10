@@ -4,5 +4,5 @@ INNER JOIN orders o ON c.id = o.cust_id
 WHERE o.order_date >= '1995-01-01'
 GROUP BY c.nation
 HAVING SUM(o.total_price) > 10000.0
-ORDER BY total_spend DESC
+ORDER BY total_spend DESC, c.nation ASC
 LIMIT 5

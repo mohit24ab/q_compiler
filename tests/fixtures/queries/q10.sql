@@ -3,5 +3,5 @@ FROM lineitem l
 INNER JOIN orders o ON l.order_id = o.id
 INNER JOIN customer c ON o.cust_id = c.id
 WHERE c.mktsegment = 'BUILDING' AND o.order_priority = '1-URGENT'
-ORDER BY l.extended_price DESC
+ORDER BY l.extended_price DESC, l.id ASC
 LIMIT 20

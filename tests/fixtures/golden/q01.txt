@@ -1,5 +1,5 @@
 Limit[n=10]
-  Sort[keys=customer.acctbal DESC]
+  Sort[keys=customer.acctbal DESC, customer.id ASC]
     Project[customer.id AS id, customer.name AS name, customer.nation AS nation, customer.acctbal AS acctbal]
       Filter[customer.mktsegment = 'BUILDING']
         Scan[customer]

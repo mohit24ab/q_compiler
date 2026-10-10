@@ -1,5 +1,5 @@
 Limit[n=10]
-  Sort[keys=orders.total_price DESC]
+  Sort[keys=orders.total_price DESC, order_id ASC]
     Project[orders.id AS order_id, customer.name AS cust_name, customer.nation AS nation, orders.total_price AS total_price, orders.order_date AS order_date]
       Filter[customer.nation = 'UNITED STATES' AND orders.total_price > 1000.0]
         Join[kind=inner, cond=orders.cust_id = customer.id]

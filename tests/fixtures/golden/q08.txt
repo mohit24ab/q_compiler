@@ -1,5 +1,5 @@
 Limit[n=15]
-  Sort[keys=lineitem.extended_price DESC]
+  Sort[keys=lineitem.extended_price DESC, line_id ASC]
     Project[lineitem.id AS line_id, part.name AS part_name, part.brand AS brand, lineitem.quantity AS quantity, lineitem.extended_price AS extended_price, part.retail_price AS retail_price]
       Filter[part.brand = 'Brand#11' AND lineitem.quantity >= 20]
         Join[kind=inner, cond=lineitem.part_id = part.id]

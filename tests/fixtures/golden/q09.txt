@@ -1,5 +1,5 @@
 Limit[n=20]
-  Sort[keys=lineitem.ship_date ASC]
+  Sort[keys=lineitem.ship_date ASC, lineitem_id ASC]
     Project[lineitem.id AS lineitem_id, orders.id AS order_id, orders.order_date AS order_date, lineitem.ship_date AS ship_date, lineitem.extended_price AS extended_price]
       Filter[orders.order_status = 'O' AND lineitem.ship_date > orders.order_date]
         Join[kind=inner, cond=lineitem.order_id = orders.id]

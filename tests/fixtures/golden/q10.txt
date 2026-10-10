@@ -1,5 +1,5 @@
 Limit[n=20]
-  Sort[keys=lineitem.extended_price DESC]
+  Sort[keys=lineitem.extended_price DESC, lineitem_id ASC]
     Project[lineitem.id AS lineitem_id, orders.id AS order_id, customer.name AS cust_name, customer.nation AS nation, lineitem.extended_price AS extended_price]
       Filter[customer.mktsegment = 'BUILDING' AND orders.order_priority = '1-URGENT']
         Join[kind=inner, cond=orders.cust_id = customer.id]

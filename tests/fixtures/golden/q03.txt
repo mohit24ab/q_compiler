@@ -1,5 +1,5 @@
 Limit[n=15]
-  Sort[keys=orders.order_date ASC, orders.total_price DESC]
+  Sort[keys=orders.order_date ASC, orders.total_price DESC, orders.id ASC]
     Project[orders.id AS id, orders.cust_id AS cust_id, orders.order_status AS order_status, orders.total_price AS total_price, orders.order_date AS order_date]
       Filter[orders.order_date >= '1995-01-01' AND orders.order_status = 'O']
         Scan[orders]

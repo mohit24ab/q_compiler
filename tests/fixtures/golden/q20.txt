@@ -1,5 +1,5 @@
 Limit[n=10]
-  Sort[keys=revenue DESC, item_count DESC]
+  Sort[keys=revenue DESC, item_count DESC, customer.mktsegment ASC, customer.nation ASC]
     Project[customer.mktsegment AS mktsegment, customer.nation AS nation, item_count, revenue]
       Filter[sum(lineitem.extended_price) > 5000.0]
         Aggregate[group=customer.mktsegment, customer.nation, aggs=count(*) AS item_count, sum(lineitem.extended_price) AS revenue]

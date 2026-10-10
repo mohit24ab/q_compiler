@@ -1,5 +1,5 @@
 Limit[n=5]
-  Sort[keys=customer.acctbal ASC]
+  Sort[keys=customer.acctbal ASC, customer.id ASC]
     Project[customer.id AS id, customer.name AS name, customer.nation AS nation, customer.phone AS phone, customer.acctbal AS acctbal]
       Filter[customer.acctbal < 0.0 AND NOT customer.phone IS NULL]
         Scan[customer]

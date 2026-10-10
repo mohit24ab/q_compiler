@@ -1,5 +1,5 @@
 Limit[n=10]
-  Sort[keys=lineitem.extended_price DESC]
+  Sort[keys=lineitem.extended_price DESC, lineitem_id ASC]
     Project[customer.name AS cust_name, orders.id AS order_id, lineitem.id AS lineitem_id, lineitem.extended_price AS extended_price, lineitem.discount AS discount]
       Filter[customer.nation = 'GERMANY' AND lineitem.discount > 0.05]
         Join[kind=inner, cond=orders.id = lineitem.order_id]
