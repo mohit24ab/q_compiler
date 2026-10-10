@@ -9,6 +9,17 @@ Produced by `python -m bench.runner --scale bench`; raw numbers in `runner_bench
 * platform: Windows-11-10.0.26200-SP0
 * processor: Intel64 Family 6 Model 186 Stepping 2, GenuineIntel
 * every answer matches the reference interpreter: yes
+* since this run (checked 10 Oct; the table is not re-measured, see below):
+  * B's `e8ca91e` keeps join order under Sort/Limit (`keep_row_order`). Only q10's
+    optimized plan changes: `(lineitem ⋈ orders) ⋈ customer` instead of
+    `lineitem ⋈ (orders ⋈ customer)`. Timed alternately in one process, it is **1.6x
+    slower** in both engines (compiled 448 → 715 ms, interpreted 6.2 → 9.9 s), with
+    the same answer.
+  * A's q11 gained a tie-break key (`ORDER BY quantity DESC, l.id`). Timed the same
+    way, no measurable difference.
+  * Re-measuring q10 and q11 on 10 Oct swung up to 3x with the laptop's CPU state,
+    between rounds of the same code. Those rows are not spliced into a table measured
+    in one 2-hour session.
 
 Ratios are speedups (higher is better). `optimizer` compares unoptimized with optimized plans on the same engine, `compilation` compares the interpreter with generated code on the optimized plan, `fusion` compares generated code with fusion off and on, `total` compares the naive baseline with the full pipeline.
 

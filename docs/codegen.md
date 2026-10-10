@@ -387,6 +387,15 @@ What the numbers say:
 * **Noise.** Where nothing fused, fused and unfused are the same code; those 31 pairs
   differ by up to 1.13x (q06, 1.6 vs 1.8 ms) and 1.10x (q05). Treat differences under
   about 1.15x as noise; q17's 0.97x fusion ratio is one of them.
+* **Since this run:**
+  * B's `e8ca91e` stops reordering joins under a Sort or Limit (`keep_row_order`), so
+    tied rows keep their order for the row-for-row ORDER BY check. Of the 20 queries
+    only q10's plan changes, and it runs 1.6x slower in both engines (timed alternately
+    in one process).
+  * A's tie-break key on q11 makes no measurable difference.
+  * Both are recorded in `runner_bench.md`. The table itself is the one consistent
+    2-hour session: a re-measurement on another day swung up to 3x with the laptop's
+    CPU state.
 * **Earlier run, for comparison:** at the previous `bench` scale (100,000 lineitem rows,
   B's optimizer @ dfadf15) the same runner measured compilation 42.7x, optimizer 1.9x,
   total 82.4x. Ten times the data moves time into the joins and group-bys, where the
