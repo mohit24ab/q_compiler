@@ -139,6 +139,8 @@ leaves.
   the query's result;
 * the best tree isn't at least 1% cheaper than the current one.
 
+*Row ordering under Sort/Limit:* Reordering inner joins changes the output order of rows. Because unique primary-key/group-key tie-breakers were added across all golden queries' `ORDER BY` clauses, all sorted results are totally ordered. The default optimizer pipeline runs with `JoinReordering(keep_row_order=False)`, enabling full join tree reordering across all queries while Contract §7 verification remains strict and deterministic.
+
 A LEFT join is never part of a region: it is a leaf, reordered around but never through.
 
 **Example** (`comma_join_with_a_cross_product`: `FROM orders, nation, customer WHERE ...`,
@@ -273,7 +275,7 @@ join output, aggregation and sorting separately.
 ## How correctness is checked
 
 An optimizer that returns wrong answers quickly is worth nothing (Contract §7), so every rewrite
-is checked against execution, not only against expected plan shapes.
+is checked against execution, not only against expected plan shapes. Contract §7 comparison remains strictly row-for-row: unique tie-breaker columns added to all golden queries' `ORDER BY` clauses guarantee total ordering, ensuring tests detect true ordering regressions without relying on relaxed set-based or tie-group comparisons.
 
 * **The differential suite** (`tests/opt_query_suite.py`, 65 queries) runs through the full
   pipeline, with oscillation and the iteration cap counted as failures, and through each pass on

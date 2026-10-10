@@ -40,7 +40,7 @@ def default_passes() -> list[OptimizerPass]:
     # that pruning leaves behind, which saves the loop an iteration on 16
     # queries. Folding first, as the textbook suggests, ends in the same plans
     # here: the fixed-point loop runs folding before the next pushdown anyway.
-    return [PredicatePushdown(), JoinReordering(), ColumnPruning(), ConstantFolding()]
+    return [PredicatePushdown(), JoinReordering(keep_row_order=False), ColumnPruning(), ConstantFolding()]
 
 
 def optimize(plan: Any, catalog: Any) -> tuple[Any, list[PassTrace]]:
