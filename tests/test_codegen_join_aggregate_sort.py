@@ -90,6 +90,40 @@ def test_sort_desc_nulls_last_and_stable_ties():
     assert ties == [3, 6, 1, 4, 2, 5]                  # qty%3 = 0,0,1,1,2,2 in input order
 
 
+def test_order_by_an_aggregate_the_project_renamed():
+    # sums: US 10+30=40, EU 20+50=70, AP NULL, NULL region 60; DESC, NULLs last, top 3
+    plan = JOIN_AGG_PLANS["order_by_aggregate_above_project"][0]
+    expected = [("EU", 70.0), (None, 60.0), ("US", 40.0)]
+    assert run("order_by_aggregate_above_project").to_rows() == expected
+    assert interpret(plan, TABLES).to_rows() == expected
+    # qty is unique, so sum(amount)+1 is amount+1; qty 4 has a NULL amount and goes last
+    assert run("order_by_select_list_expressions_above_project").to_rows() == [
+        (12, 60.0), (10, 50.0), (6, 30.0), (4, 20.0), (2, 10.0), (8, None)]
+
+
+def test_order_by_aggregate_through_the_binder_matches_order_by_alias():
+    """`ORDER BY SUM(x)` and `ORDER BY total` (its alias) are the same query, unoptimized,
+    in both engines, fused or not, whatever shape the binder gives it (since main @ 0993653
+    it rewrites the key to the alias, or to a hidden aggregate when SUM(x) isn't selected)."""
+    from bench import runner
+    from frontend.binder import parse_and_bind
+    catalog, tables = runner.load_data("tiny", 42)
+    head = "SELECT nation, SUM(acctbal) AS total, COUNT(*) AS n FROM customer GROUP BY nation"
+    by_alias = interpret(parse_and_bind(f"{head} ORDER BY total DESC, nation", catalog), tables)
+    cases = [(f"{head} ORDER BY SUM(acctbal) DESC, nation", by_alias),
+             (f"{head} ORDER BY SUM(acctbal) * -1, nation", by_alias),
+             ("SELECT nation FROM customer GROUP BY nation ORDER BY SUM(acctbal) DESC, nation",
+              by_alias.select(["nation"]))]
+    for sql, expected in cases:
+        plan = parse_and_bind(sql, catalog)
+        results = [interpret(plan, tables)] + [
+            compile_and_run(generate(plan, catalog, mode="compiled", fuse=f), tables)
+            for f in (True, False)]
+        for got in results:
+            ok, why = compare_tables(expected, got, ordered=True)
+            assert ok, f"{sql}: {why}"
+
+
 def test_limit_edges():
     assert run("limit_zero_and_overflow").num_rows == 0
     assert run("join_limit_without_sort_keeps_interpreter_order").column("id").to_pylist() == \

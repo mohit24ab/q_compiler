@@ -16,7 +16,9 @@ from codegen.exprgen import (
     conjuncts, full_src,
 )
 from runtime._compat import BinaryOp, format_plan
-from runtime.expr_eval import _norm, agg_result_dtype, expr_key, node_kind, render_expr
+from runtime.expr_eval import (
+    _norm, agg_result_dtype, expr_key, node_kind, project_expr_columns, render_expr,
+)
 
 COMPILED_KINDS = {"Scan", "Filter", "Project", "Join", "Aggregate", "Sort", "Limit"}
 
@@ -257,7 +259,7 @@ class PlanCompiler:
             v = self.em.fresh(alias)
             self.em.line(f"{v} = {full_src(code.v, rel.n, dtype) if code.scalar else code.v}")
             out.append(CVar(alias, dtype, None, v, self._bind_ok(gen, v, code.ok, rel.n)))
-        return Rel(out, rel.n)
+        return Rel(out, rel.n, project_expr_columns(node.exprs, gen.scope.index_of, rel.expr_columns))
 
     # ------------------------------------------------------------------ fused pipeline
     def _fused(self, node, project, filters, scan) -> Rel:

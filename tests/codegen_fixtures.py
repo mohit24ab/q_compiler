@@ -337,4 +337,22 @@ JOIN_AGG_PLANS = {
             exprs=[(col("name"), "name"), (op("*", col("avg_total"), lit(2)), "dbl")]),
             keys=[(col("dbl"), True)]), n=2),
         True),
+    # The binder's shape for `SELECT region, SUM(amount) AS total ... ORDER BY SUM(amount)`:
+    # the Sort sits above the Project and names the aggregate, not its alias.
+    "order_by_aggregate_above_project": (
+        Limit(child=Sort(child=Project(
+            child=Aggregate(child=scan("sales"), group_keys=[col("region", "sales")],
+                            aggs=[(_agg("sum", col("amount", "sales")), "total")]),
+            exprs=[(col("region", "sales"), "region"), (col("total"), "total")]),
+            keys=[(_agg("sum", col("amount", "sales")), True)]), n=3),
+        True),
+    # ... and `ORDER BY SUM(amount) + 1 DESC, qty * 2` with both expressions in the select list
+    "order_by_select_list_expressions_above_project": (
+        Sort(child=Project(
+            child=Aggregate(child=scan("sales"), group_keys=[col("qty", "sales")],
+                            aggs=[(_agg("sum", col("amount", "sales")), "total")]),
+            exprs=[(op("*", col("qty", "sales"), lit(2)), "dbl"), (col("total"), "total")]),
+            keys=[(op("+", _agg("sum", col("amount", "sales")), lit(1)), True),
+                  (op("*", col("qty", "sales"), lit(2)), False)]),
+        True),
 }
