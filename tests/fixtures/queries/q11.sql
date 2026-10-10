@@ -3,5 +3,5 @@ FROM lineitem l
 INNER JOIN orders o ON l.order_id = o.id
 INNER JOIN part p ON l.part_id = p.id
 WHERE o.order_status = 'F' AND p.size > 10
-ORDER BY l.quantity DESC
+ORDER BY l.quantity DESC, l.id ASC
 LIMIT 15

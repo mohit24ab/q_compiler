@@ -6,10 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "q_compiler"
 version = "0.1.0"
 description = "A toy relational query compiler and differential execution engine"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24.0",
     "pyarrow>=14.0.0",
+    "duckdb>=0.9.0",
     "sqlglot>=20.0.0",
     "pytest>=7.0.0",
     "matplotlib>=3.5.0",
@@ -21,6 +22,11 @@ dev = [
     "matplotlib>=3.5.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ir*", "bench*", "catalog*", "codegen*", "runtime*", "frontend*", "optimizer*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
