@@ -43,6 +43,8 @@ def catalog() -> Catalog:
     customer_table = pa.table({
         "id": [1, 2, 3],
         "name": ["ann", "bob", "charlie"],
+        "first_name": ["ann", "bob", "charlie"],
+        "last_name": ["smith", "jones", "brown"],
         "c_segment": ["AUTO", "BUILDING", "AUTO"],
     })
     cat.register_table("customer", customer_table)
@@ -383,3 +385,25 @@ def test_typechecker_standalone_infer_type() -> None:
     )
     with pytest.raises(SemanticTypeError, match=r"cannot compare incompatible types"):
         tc.infer_type(bad_cmp)
+
+
+def test_string_concatenation_typechecking(catalog: Catalog) -> None:
+    """Verifies that || validates operands and type-checks to DType.STRING."""
+    sql = "SELECT first_name || ' ' || last_name AS full_name FROM customer"
+    plan = parse_and_bind(sql, catalog)
+    assert isinstance(plan, Project)
+    assert [dtype for _, dtype in plan.schema()] == [DType.STRING]
+
+    tc = TypeChecker()
+    left_lit = Literal(value="ann", dtype=DType.STRING)
+    space_lit = Literal(value=" ", dtype=DType.STRING)
+    right_lit = Literal(value="smith", dtype=DType.STRING)
+    inner_concat = BinaryOp(op="||", left=left_lit, right=space_lit)
+    outer_concat = BinaryOp(op="||", left=inner_concat, right=right_lit)
+    assert tc.infer_type(inner_concat) == DType.STRING
+    assert tc.infer_type(outer_concat) == DType.STRING
+
+    # Auto-coerced types like INT / DATE with string
+    int_concat = BinaryOp(op="||", left=Literal(value=123, dtype=DType.INT), right=space_lit)
+    assert tc.infer_type(int_concat) == DType.STRING
+

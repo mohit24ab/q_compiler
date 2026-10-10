@@ -33,6 +33,8 @@ def catalog() -> Catalog:
     customer_table = pa.table({
         "id": [1, 2, 3],
         "name": ["ann", "bob", "charlie"],
+        "first_name": ["ann", "bob", "charlie"],
+        "last_name": ["smith", "jones", "brown"],
         "c_segment": ["AUTO", "BUILDING", "AUTO"],
     })
     cat.register_table("customer", customer_table)
@@ -513,5 +515,23 @@ def test_order_by_aggregate_not_in_select_list(catalog: Catalog) -> None:
         for agg, alias in agg_calls_count
     )
     assert [name for name, _ in plan_count.schema()] == ["region"]
+
+
+def test_bind_string_concatenation_pipe(catalog: Catalog) -> None:
+    """Verifies that SQL string concatenation || binds to BinaryOp(op='||') with DType.STRING."""
+    sql = "SELECT first_name || ' ' || last_name AS full_name FROM customer"
+    plan = parse_and_bind(sql, catalog)
+    assert isinstance(plan, Project)
+    assert len(plan.exprs) == 1
+    expr, alias = plan.exprs[0]
+    assert alias == "full_name"
+    assert isinstance(expr, BinaryOp)
+    assert expr.op == "||"
+    assert isinstance(expr.left, BinaryOp)
+    assert expr.left.op == "||"
+    assert isinstance(expr.right, ColumnRef)
+    assert expr.right.name == "last_name"
+    assert plan.schema() == [("full_name", DType.STRING)]
+
 
 

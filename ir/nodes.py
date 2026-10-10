@@ -38,6 +38,8 @@ def _infer_expr_dtype(expr: Expr | None, child_schema: list[tuple[str, DType]]) 
 
     if isinstance(expr, BinaryOp):
         op = expr.op.strip().upper()
+        if op == "||":
+            return DType.STRING
         if op in ("=", "!=", "<", ">", "<=", ">=", "AND", "OR"):
             return DType.BOOL
         left_dt = _infer_expr_dtype(expr.left, child_schema)

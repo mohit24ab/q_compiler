@@ -61,3 +61,19 @@ def test_differential_harness_detects_mismatches() -> None:
     ok_schema, diff_schema = compare_results(res_a, res_d)
     assert ok_schema is False
     assert "Schema columns differ" in diff_schema
+
+
+def test_differential_harness_float_tolerance() -> None:
+    """Verifies that floats within tolerance match and do not produce false mismatches."""
+    res_a = QueryResult(column_names=["val"], rows=[(1.2345674,), (1e-6,)])
+    res_b = QueryResult(column_names=["val"], rows=[(1.2345675,), (1e-6 + 1e-12,)])
+    ok, _ = compare_results(res_a, res_b)
+    assert ok is True
+
+    # Larger discrepancy outside tolerance is caught
+    res_c = QueryResult(column_names=["val"], rows=[(1.2345674,), (1.0,)])
+    res_d = QueryResult(column_names=["val"], rows=[(1.2345674,), (1.05,)])
+    ok_mismatch, diff = compare_results(res_c, res_d)
+    assert ok_mismatch is False
+    assert "differing row(s) detected" in diff
+

@@ -196,6 +196,16 @@ class TypeChecker:
                     )
                 return DType.BOOL
 
+            # String concatenation operator: ||
+            elif op == "||":
+                valid_types = (DType.STRING, DType.INT, DType.FLOAT, DType.BOOL, DType.DATE)
+                if left_type not in valid_types or right_type not in valid_types:
+                    raise SemanticTypeError(
+                        f"Offending expression '{format_expr(expr)}': operator '{expr.op}' "
+                        f"requires string or coercible operands, got {left_type} and {right_type}."
+                    )
+                return DType.STRING
+
             else:
                 raise SemanticError(f"Unsupported binary operator: '{expr.op}'.")
 

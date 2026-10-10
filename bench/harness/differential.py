@@ -25,12 +25,28 @@ class QueryResult:
         return self.rows
 
 
+def _val_close(v1: Any, v2: Any, rel_tol: float = 1e-5, abs_tol: float = 1e-5) -> bool:
+    """Checks whether two scalar values are equal, using math.isclose for floats."""
+    if isinstance(v1, (float, int)) and isinstance(v2, (float, int)):
+        if isinstance(v1, float) or isinstance(v2, float):
+            try:
+                f1, f2 = float(v1), float(v2)
+                if math.isnan(f1) and math.isnan(f2):
+                    return True
+                if math.isnan(f1) or math.isnan(f2):
+                    return False
+                return math.isclose(f1, f2, rel_tol=rel_tol, abs_tol=abs_tol)
+            except (TypeError, ValueError):
+                pass
+    return v1 == v2
+
+
 def _canon_val(v: Any, digits: int = 6) -> Any:
     """Canonicalizes scalar values for stable differential comparisons."""
     if isinstance(v, float):
         if math.isnan(v):
             return "NaN"
-        return round(v, digits) + 0.0
+        return v
     if isinstance(v, (datetime.date, datetime.datetime)):
         return v.isoformat()
     return v
@@ -39,7 +55,15 @@ def _canon_val(v: Any, digits: int = 6) -> Any:
 def _sort_key(row: tuple[Any, ...]) -> tuple:
     """Computes a stable sort key for order-insensitive row comparisons."""
     return tuple(
-        (v is None, type(v).__name__, str(v) if v is not None else "")
+        (
+            v is None,
+            type(v).__name__,
+            round(float(v), 4)
+            if isinstance(v, (float, int)) and not (isinstance(v, float) and math.isnan(v))
+            else str(v)
+            if v is not None
+            else "",
+        )
         for v in row
     )
 
@@ -72,6 +96,8 @@ def compare_results(
     actual: Any,
     ordered: bool = False,
     digits: int = 6,
+    rel_tol: float = 1e-5,
+    abs_tol: float = 1e-5,
 ) -> tuple[bool, str]:
     """Compares two query result sets.
 
@@ -100,10 +126,32 @@ def compare_results(
 
     diffs: list[tuple[int, tuple, tuple]] = []
     for i, (e_row, a_row) in enumerate(zip(exp_rows, act_rows)):
-        if e_row != a_row:
+        if len(e_row) != len(a_row) or not all(
+            _val_close(e, a, rel_tol=rel_tol, abs_tol=abs_tol) for e, a in zip(e_row, a_row)
+        ):
             diffs.append((i, e_row, a_row))
             if len(diffs) >= 5:
                 break
+
+    if diffs and not ordered:
+        # Multiset check fallback for float sorting ties
+        matched_actual_indices: set[int] = set()
+        all_matched = True
+        for e_row in exp_rows:
+            found = False
+            for j, a_row in enumerate(act_rows):
+                if j not in matched_actual_indices:
+                    if len(e_row) == len(a_row) and all(
+                        _val_close(e, a, rel_tol=rel_tol, abs_tol=abs_tol) for e, a in zip(e_row, a_row)
+                    ):
+                        matched_actual_indices.add(j)
+                        found = True
+                        break
+            if not found:
+                all_matched = False
+                break
+        if all_matched and len(matched_actual_indices) == len(act_rows):
+            return True, "equal"
 
     if diffs:
         lines = [f"{len(diffs)} differing row(s) detected; first differing rows:"]
