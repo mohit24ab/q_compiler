@@ -73,7 +73,7 @@ class _Interpreter:
         if node.pushed_predicate is not None:
             table = self._apply_predicate(_Rel(table), node.pushed_predicate).table
         if node.columns is not None:
-            table = Table([table.column(c) for c in node.columns])
+            table = Table([table.column(c) for c in node.columns], table.num_rows)
         return _Rel(table)
 
     # ------------------------------------------------------------------ Filter

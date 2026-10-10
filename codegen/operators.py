@@ -126,6 +126,16 @@ class PlanCompiler:
         self.em.blank()
         self.em.comment(format_plan(node).splitlines()[0].strip())
 
+    def _as_column(self, gen, code, n: str, dtype) -> tuple[str, str]:
+        """`code` as a full-length column: (values source, ok source), where ok is "True",
+        "False" or an array. A constant (GROUP BY 'all', a key folded to 2, x / 0) is
+        broadcast, because the code it feeds indexes it and calls .tolist() on it."""
+        v = full_src(code.v, n, dtype) if code.scalar else code.v
+        ok = code.ok
+        if ok not in ("True", "False") and gen.is_scalar(ok):
+            ok = f"np.full({n}, {ok}, dtype=bool)"
+        return v, ok
+
     def _bind_ok(self, gen, v: str, ok_src: str, n: str) -> str:
         """Give a non-trivial ok expression its own `<v>_ok` variable (always an array)."""
         if ok_src in ("True", "False"):
@@ -488,13 +498,13 @@ class PlanCompiler:
     def _key_list(self, rel: Rel, exprs, prefix: str):
         """Emit Python key lists (tuples for multi-column keys) and their combined ok mask."""
         gen = ExprGen(self.em, rel)
-        codes = [gen.gen(e) for e in exprs]
+        columns = [self._as_column(gen, gen.gen(e), rel.n, gen.dtype(e)) for e in exprs]
         keys = self.em.fresh(f"{prefix}_keys")
         ok = self.em.fresh(f"{prefix}_keys_ok")
-        lists = [f"{c.v}.tolist()" for c in codes]
+        lists = [f"{v}.tolist()" for v, _ in columns]
         self.em.line(f"{keys} = {lists[0]}" if len(lists) == 1
                      else f"{keys} = list(zip({', '.join(lists)}))")
-        oks = and_ok(*[c.ok for c in codes])
+        oks = and_ok(*[o for _, o in columns])
         self.em.line(f"{ok} = " + (f"np.ones({rel.n}, dtype=bool)" if oks == "True" else
                                    f"np.zeros({rel.n}, dtype=bool)" if oks == "False" else oks))
         return keys, ok
@@ -580,43 +590,57 @@ class PlanCompiler:
 
     def _group_ids(self, gen, rel, group_keys, out, expr_columns):
         """Hash every row's key tuple to a dense group id (first-seen order)."""
-        self.em.comment("hash aggregation: each distinct key tuple gets a group id, "
-                        "in first-seen order")
         codes = [gen.gen(k) for k in group_keys]
-        parts = []
-        for code in codes:
-            if code.ok == "True":
-                parts.append(f"{code.v}.tolist()")
-            else:
-                parts.append(f"[v if o else None for v, o in zip({code.v}.tolist(), {code.ok}.tolist())]")
-        for name in ("v", "o", "key"):
-            self.em.reserve(name)
-        keys = self.em.fresh("group_keys")
-        groups, gid, ng, first = (self.em.fresh(x) for x in ("groups", "gid", "n_groups", "first_row"))
-        self.em.line(f"{keys} = {parts[0]}" if len(parts) == 1 else f"{keys} = list(zip({', '.join(parts)}))")
-        self.em.line(f"{groups} = {{}}")
-        self.em.line(f"{gid} = np.fromiter(({groups}.setdefault(key, len({groups})) for key in {keys}), "
-                     f"dtype=np.int64, count=len({keys}))")
-        self.em.line(f"{ng} = len({groups})")
-        self.em.line(f"{first} = np.zeros({ng}, dtype=np.int64)")
-        self.em.line(f"{first}[{gid}[::-1]] = np.arange(len({gid}))[::-1]  # each group's first row")
+        dtypes = [gen.dtype(k) for k in group_keys]
+        # A constant key (GROUP BY 'all', or nation, 1+1) has one value on every row, so
+        # it never splits a group: only the other keys are hashed.
+        varying = [(c, d) for c, d in zip(codes, dtypes) if not (c.scalar and gen.is_scalar(c.ok))]
+        if varying:
+            self.em.comment("hash aggregation: each distinct key tuple gets a group id, "
+                            "in first-seen order")
+            parts = []
+            for code, dtype in varying:
+                v, ok = self._as_column(gen, code, rel.n, dtype)
+                if ok == "True":
+                    parts.append(f"{v}.tolist()")
+                elif ok == "False":
+                    parts.append(f"[None] * {rel.n}")
+                else:
+                    parts.append(f"[v if o else None for v, o in zip({v}.tolist(), {ok}.tolist())]")
+            for name in ("v", "o", "key"):
+                self.em.reserve(name)
+            keys = self.em.fresh("group_keys")
+            groups, gid, ng, first = (self.em.fresh(x) for x in ("groups", "gid", "n_groups", "first_row"))
+            self.em.line(f"{keys} = {parts[0]}" if len(parts) == 1 else f"{keys} = list(zip({', '.join(parts)}))")
+            self.em.line(f"{groups} = {{}}")
+            self.em.line(f"{gid} = np.fromiter(({groups}.setdefault(key, len({groups})) for key in {keys}), "
+                         f"dtype=np.int64, count=len({keys}))")
+            self.em.line(f"{ng} = len({groups})")
+            self.em.line(f"{first} = np.zeros({ng}, dtype=np.int64)")
+            self.em.line(f"{first}[{gid}[::-1]] = np.arange(len({gid}))[::-1]  # each group's first row")
+        else:
+            gid, ng, first = (self.em.fresh(x) for x in ("gid", "n_groups", "first_row"))
+            self.em.comment("every GROUP BY key is a constant: one group, or none when there are no rows")
+            self.em.line(f"{gid} = np.zeros({rel.n}, dtype=np.int64)")
+            self.em.line(f"{ng} = min({rel.n}, 1)")
+            self.em.line(f"{first} = np.zeros({ng}, dtype=np.int64)")
 
-        for key_expr, code in zip(group_keys, codes):
+        for key_expr, code, dtype in zip(group_keys, codes, dtypes):
             if node_kind(key_expr) == "ColumnRef":
                 col = rel.columns[gen.scope.index_of(key_expr)]
                 name, dtype, table = col.name, col.dtype, col.table
             else:
-                name, dtype, table = render_expr(key_expr), gen.dtype(key_expr), None
+                name, table = render_expr(key_expr), None
                 expr_columns[expr_key(key_expr)] = len(out)
             v = self.em.fresh(name)
-            src = full_src(code.v, rel.n, dtype) if code.scalar else code.v
-            if code.ok in ("True", "False"):
+            src, ok_src = self._as_column(gen, code, rel.n, dtype)
+            if ok_src in ("True", "False"):
                 self.em.line(f"{v} = {src}[{first}]")
-                ok = code.ok
+                ok = ok_src
             else:
                 ok = f"{v}_ok"
                 self.em.reserve(ok)
-                self.em.line(f"{v}, {ok} = {src}[{first}], {code.ok}[{first}]")
+                self.em.line(f"{v}, {ok} = {src}[{first}], {ok_src}[{first}]")
             out.append(CVar(name, dtype, table, v, ok))
         return gid, ng
 
@@ -624,13 +648,13 @@ class PlanCompiler:
         """Emit one aggregate; return its ok (NULL-mask) source."""
         label = render_expr(call)
         if func == "count" and call.arg is None:
-            self.em.line(f"{v} = np.bincount({gid}, minlength={ng})  # {label}" if gid
-                         else f"{v} = np.array([{rel.n}], dtype=np.int64)  # {label}")
+            self.em.line(f"{v} = np.bincount({gid}, minlength={ng})" if gid
+                         else f"{v} = np.array([{rel.n}], dtype=np.int64)", note=label)
             return "True"
 
         code = gen.gen(call.arg)
         x = full_src(code.v, rel.n, gen.dtype(call.arg)) if code.scalar else code.v
-        self.em.line(f"# {label}: NULL inputs are skipped")
+        self.em.comment(f"{label}: NULL inputs are skipped")
         if code.ok == "True":
             sel = None
         elif code.ok == "False":
@@ -735,4 +759,4 @@ class PlanCompiler:
                 else:
                     ok = c.ok
                 self.em.line(f"({c.name!r}, DType.{c.dtype.name}, {c.table!r}, {c.v}, {ok}),")
-        self.em.line("])")
+        self.em.line(f"], {rel.n})  # the row count: a result can have rows but no columns")

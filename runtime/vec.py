@@ -9,6 +9,7 @@ Convention in generated code: every column is two arrays, `values` and `ok`
 """
 from __future__ import annotations
 
+import datetime
 import re
 
 import numpy as np
@@ -31,8 +32,9 @@ def read_column(table: Table, name: str, rows=None) -> tuple[np.ndarray, np.ndar
     return values, ok
 
 
-def build_table(columns) -> Table:
-    """Assemble the result from (name, dtype, table, values, ok_or_None) tuples."""
+def build_table(columns, num_rows: int | None = None) -> Table:
+    """Assemble the result from (name, dtype, table, values, ok_or_None) tuples.
+    `num_rows` keeps the row count of a result with no columns (and checks the rest)."""
     out = []
     for name, dtype, table, values, ok in columns:
         values = np.asarray(values, dtype=_NP_DTYPE[dtype.name])
@@ -41,7 +43,7 @@ def build_table(columns) -> Table:
             ok = np.asarray(ok, dtype=bool)
             valid = None if ok.all() else ok
         out.append(Column(name, dtype, values, valid, table))
-    return Table(out)
+    return Table(out, num_rows)
 
 
 def like(values, pattern: str) -> np.ndarray:
@@ -51,6 +53,20 @@ def like(values, pattern: str) -> np.ndarray:
         flags=re.DOTALL)
     return np.fromiter((regex.fullmatch(v) is not None for v in values),
                        dtype=bool, count=len(values))
+
+
+def parse_dates(values, ok=None):
+    """A STRING column (or one string) compared with a DATE, as datetime64[D]: each value
+    parsed by datetime.date.fromisoformat, the interpreter's parser, so both engines read
+    and reject the same strings. Only rows where `ok` is True are parsed; the rest hold
+    a filler, as every NULL slot does."""
+    epoch = datetime.date(1970, 1, 1)
+    if np.ndim(values) == 0:
+        present = True if ok is None else bool(ok)
+        return np.datetime64(datetime.date.fromisoformat(str(values)) if present else epoch, "D")
+    present = [True] * len(values) if ok is None else np.broadcast_to(ok, len(values)).tolist()
+    return np.array([datetime.date.fromisoformat(v) if p else epoch
+                     for v, p in zip(values.tolist(), present)], dtype="datetime64[D]")
 
 
 def take_or_null(values: np.ndarray, ok, idx: np.ndarray):

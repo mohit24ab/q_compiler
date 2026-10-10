@@ -48,7 +48,23 @@ The semantics are copied from `runtime/expr_eval.py`, the interpreter, which is 
   that renamed it: `Sort[sum(x)]` above `Project[..., total]` sorts on `total`
   (`runtime.expr_eval.project_expr_columns`, shared by both engines). Since main @
   0993653 the binder itself writes `ORDER BY SUM(x)` as `Sort[total]`; plans built
-  another way (by hand, by a pass) still get the rule.
+  another way (by hand, by a pass) still get the rule;
+* a DATE compared with a STRING compares as dates, with the string parsed by
+  `datetime.date.fromisoformat`, the interpreter's parser. A literal is parsed at
+  generation time. Anything else (a STRING column) is parsed row by row with
+  `runtime.vec.parse_dates`, and only where both sides are present, as the interpreter
+  does. `np.datetime64` is never the parser: it reads `'20240105'` as the year 20240105;
+* a constant GROUP BY key (`'all'`, `1+1`) never splits a group. With only constant keys
+  there is one group, or none when the input is empty (a global aggregate still returns
+  one row). A constant join key (`o.id / 0 = c.id`) is a column like any other;
+* a relation can have rows but no columns: a Scan pruned to `columns=[]` under `COUNT(*)`.
+  `Table` carries `num_rows` for that case, and generated code passes it to `build_table`.
+
+Plan text reaches the source only through comments and the docstring, and is escaped in
+both. A SQL string literal may contain a newline, which written raw would end a comment
+and turn the rest of the literal into code. Escaped, it appears as `\n`.
+`Emitter.line` refuses any text that would span more than one physical line, so a
+missed spot fails generation instead of running.
 
 When generated code fails, `compile_and_run` raises `GeneratedCodeError` with the numbered
 source and a `-->` on the failing line (the innermost generated frame, even when the
@@ -284,7 +300,10 @@ How it measures, and why:
 
 * **Correctness first.** Every configuration's answer is compared with
   `interpret(unoptimized plan)`. A wrong answer is still timed but flagged
-  (`matches_reference`), and the runner exits 1.
+  (`matches_reference`), and the runner exits 1. `runtime.compare_tables` compares floats
+  with `math.isclose` (relative 1e-9, absolute 1e-9). It used to round to 6 decimals,
+  which is below float resolution for a 1M-row sum near 1e9, and makes two values either
+  side of a rounding boundary differ however close they are.
 * **Execution only.** Binding, optimizing and code generation happen once, before timing,
   as for a prepared statement. `compile_ms` reports generate() + compile() separately.
   Input tables are converted from Arrow once, up front, so no configuration pays for that.

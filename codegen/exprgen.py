@@ -118,9 +118,11 @@ def literal_src(value, dtype) -> str:
     if name == "DATE":
         if isinstance(value, datetime.datetime):
             value = value.date()
-        iso = value.isoformat() if isinstance(value, datetime.date) else str(value)
-        datetime.date.fromisoformat(iso)  # fail at generation time, not run time
-        return f"np.datetime64({iso!r}, 'D')"
+        if not isinstance(value, datetime.date):
+            # the interpreter's parser, so both engines read '20240105' as 5 Jan 2024
+            # (np.datetime64 would read it as the year 20240105); fails at generation time
+            value = datetime.date.fromisoformat(str(value))
+        return f"np.datetime64({value.isoformat()!r}, 'D')"
     if name == "BOOL":
         return "np.True_" if value else "np.False_"
     if name == "FLOAT":
@@ -158,7 +160,7 @@ class ExprGen:
         can drop the array part of an expression (TRUE OR <x> is simply TRUE).
         """
         for node in ast.walk(ast.parse(src, mode="eval")):
-            if isinstance(node, ast.Name) and node.id not in ("np", "float") \
+            if isinstance(node, ast.Name) and node.id not in ("np", "float", "parse_dates") \
                     and node.id not in self.scalar_temps:
                 return False
         return True
@@ -215,7 +217,8 @@ class ExprGen:
             return self._kleene(op, expr)
 
         a, b = self.gen(expr.left), self.gen(expr.right)
-        a, b = self._coerce_dates(expr, a, b)
+        if op in _CMP:
+            a, b = self._coerce_dates(expr, a, b)
         ok = and_ok(a.ok, b.ok)
 
         if op in ("+", "-", "*"):
@@ -258,13 +261,25 @@ class ExprGen:
         return self.code(v, ok)
 
     def _coerce_dates(self, expr, a: Code, b: Code):
-        """`day >= '2024-01-01'` with a STRING literal compares as a DATE."""
+        """A DATE compared with a STRING compares as dates, the string parsed as an ISO
+        date like the interpreter's _coerce_for_compare: a literal (`day >= '2024-01-01'`)
+        at generation time, anything else (a STRING column) row by row at run time."""
         lt, rt = self.dtype(expr.left), self.dtype(expr.right)
-        if lt.name == "DATE" and rt.name == "STRING" and node_kind(expr.right) == "Literal":
-            b = self.code(literal_src(expr.right.value, lt), b.ok)
-        elif rt.name == "DATE" and lt.name == "STRING" and node_kind(expr.left) == "Literal":
-            a = self.code(literal_src(expr.left.value, rt), a.ok)
+        if lt.name == "DATE" and rt.name == "STRING":
+            b = self._as_date(expr.right, b, lt, and_ok(a.ok, b.ok))
+        elif rt.name == "DATE" and lt.name == "STRING":
+            a = self._as_date(expr.left, a, rt, and_ok(a.ok, b.ok))
         return a, b
+
+    def _as_date(self, expr, code: Code, date_dtype, both_ok: str) -> Code:
+        if node_kind(expr) == "Literal":
+            return self.code(literal_src(expr.value, date_dtype), code.ok)
+        if both_ok == "False":  # the comparison is NULL on every row: nothing to parse
+            return self.code(_FILLER_SRC["DATE"], code.ok)
+        # only rows where both sides are present are parsed, as the interpreter only
+        # parses a string it actually compares (a NULL on either side short-circuits)
+        mask = "None" if both_ok == "True" else both_ok
+        return self.code(f"parse_dates({code.v}, {mask})", code.ok)
 
     # ---------------------------------------------------------------- temporaries
     def name(self, src: str, hint: str) -> str:

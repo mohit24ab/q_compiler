@@ -356,3 +356,86 @@ JOIN_AGG_PLANS = {
                   (op("*", col("qty", "sales"), lit(2)), False)]),
         True),
 }
+
+
+# ---------------------------------------------------------------- B's review (Oct 2026)
+
+EVENTS = Table.from_pydict(
+    {"id":  [1, 2, 3, 4, 5],
+     "day": ["2024-01-05", "2024-03-01", None, "2024-02-02", "2024-01-05"],
+     "txt": ["2024-01-05", "2024-02-01", "2024-02-02", None, "20240105"]},  # ISO basic form too
+    [("id", DType.INT), ("day", DType.DATE), ("txt", DType.STRING)],
+)
+TABLES["events"] = EVENTS
+
+
+def _count(child, keys=()):
+    return Aggregate(child=child, group_keys=list(keys), aggs=[(_agg("count"), "n")])
+
+
+def _events_where(predicate):
+    return Project(child=Filter(child=scan("events"), predicate=predicate),
+                   exprs=[(col("id", "events"), "id")])
+
+
+REVIEW_PLANS = {
+    # Constant GROUP BY / join keys: generated code called .tolist() on a constant.
+    "group_by_constant_only": (
+        Aggregate(child=scan("sales"), group_keys=[lit("all", DType.STRING)],
+                  aggs=[(_agg("count"), "n"), (_agg("sum", col("qty", "sales")), "q")]),
+        False),
+    "group_by_constant_over_no_rows": (   # no rows: no group (unlike a global aggregate)
+        _count(Filter(child=scan("sales"), predicate=op(">", col("qty"), lit(100))),
+               [lit("all", DType.STRING)]),
+        False),
+    "group_by_column_and_constants": (
+        _count(scan("sales"), [col("region", "sales"), op("+", lit(1), lit(1)),
+                               lit(None, DType.INT)]),
+        False),
+    "group_by_constant_null_only_known_at_run_time": (   # 1 / (1 - 1)
+        _count(scan("sales"), [op("/", lit(1), op("-", lit(1), lit(1))), col("region", "sales")]),
+        False),
+    "group_by_key_null_on_every_row": (   # region || NULL: an array, NULL everywhere
+        _count(scan("sales"), [op("||", col("region", "sales"), lit(None, DType.STRING))]),
+        False),
+    "join_on_constant_null_key_inner": (   # orders.id / 0 is NULL on every row
+        Join(left=scan("orders"), right=scan("payments"),
+             condition=op("=", op("/", col("id", "orders"), lit(0)), col("order_id", "payments")),
+             kind="inner"),
+        False),
+    "join_on_constant_null_key_left": (
+        Join(left=scan("orders"), right=scan("payments"),
+             condition=op("=", op("/", col("id", "orders"), lit(0)), col("order_id", "payments")),
+             kind="left"),
+        False),
+    "join_on_constant_true_key": (   # count(*) is never NULL, so `n IS NOT NULL` is TRUE
+        Join(left=_count(scan("orders"), [col("cust_id", "orders")]), right=scan("payments"),
+             condition=op("=", UnaryOp(op="IS NOT NULL", operand=col("n")),
+                          op(">", col("amt", "payments"), lit(4))),
+             kind="inner"),
+        False),
+    # Relations with rows but no columns: the interpreter counted 0 rows.
+    "scan_with_no_columns": (scan("sales", columns=[]), False),
+    "count_over_scan_with_no_columns": (_count(scan("sales", columns=[])), False),
+    "count_over_pushed_scan_with_no_columns": (
+        _count(scan("sales", columns=[], pred=op(">", col("qty"), lit(2)))), False),
+    "count_over_filter_over_no_columns": (
+        _count(Filter(child=scan("sales", columns=[]), predicate=lit(True, DType.BOOL))), False),
+    "count_over_project_with_no_exprs": (_count(Project(child=scan("sales"), exprs=[])), False),
+    "count_over_join_of_no_columns": (
+        _count(Join(left=scan("sales", columns=[]), right=scan("orders", columns=[]),
+                    condition=lit(True, DType.BOOL), kind="inner")),
+        False),
+    "count_over_limit_of_no_columns": (_count(Limit(child=scan("sales", columns=[]), n=4)), False),
+    "group_by_over_no_columns": (_count(scan("sales", columns=[]), [lit(7)]), False),
+    # A DATE compared with a STRING: the string is parsed as an ISO date, in both engines.
+    "date_column_equals_string_column": (_events_where(op("=", col("day"), col("txt"))), False),
+    "string_column_before_date_column": (_events_where(op("<", col("txt"), col("day"))), False),
+    "date_column_equals_iso_basic_string": (
+        _events_where(op("=", col("day"), lit("20240105", DType.STRING))), False),
+    "iso_basic_date_literal_equals_date_column": (
+        _events_where(op("=", lit("20240105", DType.DATE), col("day"))), False),
+    "string_column_after_date_literal": (
+        _events_where(op(">=", col("txt"), lit("2024-02-01", DType.DATE))), False),
+}
+JOIN_AGG_PLANS.update(REVIEW_PLANS)
