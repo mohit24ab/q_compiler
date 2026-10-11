@@ -139,6 +139,20 @@ leaves.
   the query's result;
 * the best tree isn't at least 1% cheaper than the current one.
 
+*Row ordering under Sort/Limit:* Reordering inner joins changes the output order of rows, which
+is observable under a Sort whose keys tie, and under a Limit, which then keeps different rows.
+Unique primary-key/group-key tie-breakers were added across all golden queries' `ORDER BY`
+clauses, so every ordering in the golden suite is now total. That is a property of those
+queries, though, not of the optimizer's input in general, so the pass tests it per query rather
+than assuming it: a region under a Sort is reordered only when the sort keys contain a key of
+the rows being sorted, so no two tie and the top-n is forced. `optimizer/keys.py` derives those
+keys from catalog statistics -- a column with one value per row and no nulls, carried up through
+the joins that cannot duplicate it. A bare `LIMIT` with no `ORDER BY`, an `ORDER BY` whose keys
+all repeat, and anything under an outer join stay guarded. On the golden suite this reorders
+q10, as a blanket `keep_row_order=False` would; unlike that, it still refuses the tying top-n in
+`test_reordering_under_a_limit_would_keep_other_rows`, where reordering demonstrably returns a
+different five rows. Contract §7 verification is unchanged and remains strictly row-for-row.
+
 A LEFT join is never part of a region: it is a leaf, reordered around but never through.
 
 **Example** (`comma_join_with_a_cross_product`: `FROM orders, nation, customer WHERE ...`,
@@ -273,7 +287,7 @@ join output, aggregation and sorting separately.
 ## How correctness is checked
 
 An optimizer that returns wrong answers quickly is worth nothing (Contract §7), so every rewrite
-is checked against execution, not only against expected plan shapes.
+is checked against execution, not only against expected plan shapes. Contract §7 comparison remains strictly row-for-row: unique tie-breaker columns added to all golden queries' `ORDER BY` clauses guarantee total ordering, ensuring tests detect true ordering regressions without relying on relaxed set-based or tie-group comparisons.
 
 * **The differential suite** (`tests/opt_query_suite.py`, 65 queries) runs through the full
   pipeline, with oscillation and the iteration cap counted as failures, and through each pass on

@@ -40,6 +40,10 @@ def default_passes() -> list[OptimizerPass]:
     # that pruning leaves behind, which saves the loop an iteration on 16
     # queries. Folding first, as the textbook suggests, ends in the same plans
     # here: the fixed-point loop runs folding before the next pushdown anyway.
+    # keep_row_order stays on: it no longer means "never reorder under a Sort",
+    # only "not where the row order could be observed". A Sort whose keys
+    # contain a key of what it sorts is exempt, which is what lets q10 reorder
+    # without betting the result on which of several tied rows a top-n keeps.
     return [PredicatePushdown(), JoinReordering(), ColumnPruning(), ConstantFolding()]
 
 
