@@ -25,6 +25,9 @@ two or more leaves. The plan for a set of leaves is built as follows.
   Cross products are only considered when the graph forces them: when it
   has more than one connected component, each component is planned on its
   own, and the components are then joined to each other without a condition.
+  A component that only a conjunct over three or more leaves holds together
+  (``c.id + o.id = l.order_id``) has no split into linked halves, so the
+  dynamic program plans it again with cross products allowed.
 
 Each conjunct goes into the condition of the lowest join that sees every
 leaf it reads. A conjunct that reads one leaf becomes a Filter on that
@@ -43,6 +46,12 @@ The pass leaves a region alone when:
     Reordering changes the order of a join's output columns, which only a
     Project or Aggregate above it makes irrelevant. The binder always puts
     a Project on top;
+  * a Sort or Limit is above it (``keep_row_order``, on by default).
+    Reordering changes the order of the join's output rows. Under a Sort
+    that only reorders rows whose sort keys tie, and under a Limit it
+    changes which rows are kept. Both are legal SQL, but Contract §7 asks
+    for identical rows in order under ORDER BY, and the team's differential
+    harness checks exactly that;
   * the best plan is not at least 1% cheaper than the current one. Equal
     cost alternatives are not worth a change, and this keeps the pass
     stable when it runs again on its own output.
@@ -66,12 +75,14 @@ MIN_GAIN = 0.01
 class JoinReordering:
     name = "join_reordering"
 
-    def __init__(self, dp_limit: int = DP_LIMIT, min_gain: float = MIN_GAIN):
+    def __init__(self, dp_limit: int = DP_LIMIT, min_gain: float = MIN_GAIN, keep_row_order: bool = True):
         self.dp_limit = dp_limit
         self.min_gain = min_gain
+        self.keep_row_order = keep_row_order
 
     def apply(self, plan: Any, catalog: Any) -> Any:
-        return _Reorderer(catalog, self.dp_limit, self.min_gain).visit(plan, order_visible=True)
+        reorderer = _Reorderer(catalog, self.dp_limit, self.min_gain, self.keep_row_order)
+        return reorderer.visit(plan, order_visible=True, rows_ordered=False)
 
 
 @dataclass(frozen=True)
@@ -180,7 +191,8 @@ class _Planner:
         node = Join(left=left.plan, right=right.plan, condition=conjoin(conds) or TRUE, kind="inner")
         return _Entry(mask, node, a.cost + b.cost + self.model.node_cost(node).total)
 
-    def _dp(self, component: int) -> _Entry:
+    def _dp(self, component: int, linked=None) -> _Entry:
+        linked = linked or self.graph.linked
         best: dict[int, _Entry] = {e.mask: e for e in self.base if e.mask & component}
         subsets = [s for s in _submasks(component) if s & (s - 1)]
         subsets.sort(key=lambda s: (bin(s).count("1"), s))
@@ -190,10 +202,14 @@ class _Planner:
                 right = s ^ left
                 if not right or not left & low:  # each split once
                     continue
-                if left in best and right in best and self.graph.linked(left, right):
+                if left in best and right in best and linked(left, right):
                     candidate = self._join(best[left], best[right])
                     if s not in best or candidate.cost < best[s].cost:
                         best[s] = candidate
+        if component not in best:
+            # Only a conjunct over three or more leaves connects the component, and no
+            # split of it into two linked halves exists: some cross product is forced.
+            return self._dp(component, linked=lambda a, b: True)
         return best[component]
 
     def _greedy(self, component: int) -> _Entry:
@@ -227,32 +243,37 @@ def _submasks(mask: int):
 
 
 class _Reorderer:
-    def __init__(self, catalog: Any, dp_limit: int, min_gain: float):
+    def __init__(self, catalog: Any, dp_limit: int, min_gain: float, keep_row_order: bool):
         self.catalog = catalog
         self.model = CostModel(catalog)
         self.dp_limit = dp_limit
         self.min_gain = min_gain
+        self.keep_row_order = keep_row_order
 
-    def visit(self, node: Any, order_visible: bool) -> Any:
+    def visit(self, node: Any, order_visible: bool, rows_ordered: bool) -> Any:
+        """``order_visible``: the query result shows this node's column order.
+        ``rows_ordered``: a Sort or Limit above makes the order of its rows matter."""
         if isinstance(node, Join) and node.kind == "inner":
-            return self._region(node, order_visible)
+            return self._region(node, order_visible, rows_ordered)
         if isinstance(node, (Project, Aggregate)):
             inherited = False  # these name their outputs: input column order is invisible above
         elif isinstance(node, (Filter, Sort, Limit, Join)):
             inherited = order_visible
         else:
             inherited = True  # a node kind this pass doesn't know: assume order matters
-        children = [self.visit(c, inherited) for c in node.children]
+        known = isinstance(node, (Project, Aggregate, Filter, Join))
+        ordered = rows_ordered or not known  # Sort, Limit, and node kinds this pass doesn't know
+        children = [self.visit(c, inherited, ordered) for c in node.children]
         if all(new is old for new, old in zip(children, node.children)):
             return node
         return node.replace_children(tuple(children))
 
-    def _region(self, root: Join, order_visible: bool) -> Any:
+    def _region(self, root: Join, order_visible: bool, rows_ordered: bool) -> Any:
         leaves, conjuncts = [], []
         _collect(root, leaves, conjuncts)
-        new_leaves = [self.visit(leaf, order_visible) for leaf in leaves]
+        new_leaves = [self.visit(leaf, order_visible, rows_ordered) for leaf in leaves]
         current = _rebuild(root, iter(new_leaves))
-        if order_visible or len(leaves) < 3:
+        if order_visible or (rows_ordered and self.keep_row_order) or len(leaves) < 3:
             return current
         graph = build_graph(new_leaves, [p for p in conjuncts if p != TRUE], self.catalog)
         if graph is None:

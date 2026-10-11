@@ -70,3 +70,41 @@ def _canon(row):
             v = v.isoformat()
         out.append(v)
     return tuple(out)
+
+
+# SQL bound by Person A's frontend. ORDER BY on an aggregate the SELECT list
+# leaves out binds to a hidden aggregate column: Aggregate (with the hidden
+# column), Project (keeps it), Sort (on it), Project (drops it).
+ORDER_BY_AGGREGATE = [
+    "SELECT c.nation FROM customer c GROUP BY c.nation ORDER BY SUM(c.acctbal) DESC",
+    "SELECT c.nation, SUM(c.acctbal) AS s FROM customer c GROUP BY c.nation ORDER BY SUM(c.acctbal)",
+    "SELECT c.nation, COUNT(*) AS n FROM customer c GROUP BY c.nation "
+    "HAVING SUM(c.acctbal) > 0 ORDER BY AVG(c.acctbal), c.nation",
+    "SELECT c.nation FROM customer c JOIN orders o ON o.cust_id = c.id WHERE o.total_price > 100 "
+    "GROUP BY c.nation ORDER BY MAX(o.total_price) DESC LIMIT 3",
+]
+
+
+@pytest.fixture(scope="module")
+def tiny():
+    from bench.data.generate import create_test_catalog, generate_dataset
+
+    arrow = generate_dataset("tiny", seed=42)
+    tables = {name: Table.from_arrow(t, table=name) for name, t in arrow.items()}
+    return create_test_catalog("tiny", seed=42), tables
+
+
+@pytest.mark.parametrize("sql", ORDER_BY_AGGREGATE)
+def test_order_by_an_aggregate_bound_from_sql(sql, tiny):
+    from frontend import parse_and_bind
+
+    catalog, tables = tiny
+    plan = parse_and_bind(sql, catalog)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        optimized, _ = optimizer.optimize(plan, catalog)
+    expected = interpret(plan, tables)
+    actual = compile_and_run(generate(optimized, catalog, mode="compiled"), tables)
+    assert actual.num_rows > 0
+    equal, why = compare_tables(expected, actual, ordered=True)
+    assert equal, why

@@ -288,6 +288,23 @@ def having_on_aggregate():
 
 
 @query
+def having_names_an_aggregate_the_select_list_drops():
+    """SELECT region FROM sales GROUP BY region HAVING COUNT(*) > 12
+    -- as the binder builds it: HAVING repeats the call, and COUNT(*) is not selected"""
+    count = agg("count")
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region", "sales")], aggs=[(count, "count(*)")])
+    return project(Filter(child=grouped, predicate=op(">", count, lit(12))), (col("region", "sales"), "region"))
+
+
+@query
+def order_by_an_aggregate_the_select_list_drops():
+    """SELECT region FROM sales GROUP BY region ORDER BY SUM(amount) DESC"""
+    total = agg("sum", col("amount"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(total, "sum(amount)")])
+    return project(Sort(child=grouped, keys=[(total, True)]), *keep("region"))
+
+
+@query
 def group_by_without_aggs():
     """SELECT region FROM (SELECT region, COUNT(*) n FROM sales GROUP BY region)"""
     aggregate = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(agg("count"), "n")])
@@ -487,6 +504,25 @@ def having_splits_on_group_key():
                           aggs=[(agg("sum", col("amount")), "total")])
     pred = op("AND", op("<>", col("region"), lit("AP")), op(">", col("total"), lit(1500.0)))
     return project(Filter(child=aggregate, predicate=pred), *keep("region", "total"))
+
+
+@query
+def having_on_an_aggregate_of_a_group_key_must_not_push():
+    """SELECT region FROM sales GROUP BY region HAVING MAX(region) = 'EU'
+    -- MAX(region) reads only the group key, but is a result of the Aggregate"""
+    top = agg("max", col("region"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(top, "max(region)")])
+    return project(Filter(child=grouped, predicate=op("=", top, lit("EU"))), *keep("region"))
+
+
+@query
+def having_mixes_an_aggregate_and_a_group_key():
+    """SELECT region FROM sales GROUP BY region HAVING SUM(amount) > 1500.0 AND region <> 'AP'
+    -- the binder's form: the region conjunct can push, the SUM conjunct cannot"""
+    total = agg("sum", col("amount"))
+    grouped = Aggregate(child=scan("sales"), group_keys=[col("region")], aggs=[(total, "sum(amount)")])
+    pred = op("AND", op(">", total, lit(1500.0)), op("<>", col("region"), lit("AP")))
+    return project(Filter(child=grouped, predicate=pred), *keep("region"))
 
 
 @query

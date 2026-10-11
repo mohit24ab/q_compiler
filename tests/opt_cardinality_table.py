@@ -1,8 +1,10 @@
 """Regenerate docs/cardinality_estimates.md: ``python tests/opt_cardinality_table.py``.
 
 Runs the validation harness (optimizer/cardinality_report.py) over the
-estimator workload and the differential suite. Actual row counts come from
-the reference evaluator, one subtree at a time.
+estimator workload, the differential suite and Person A's 20 golden queries.
+Actual row counts come from the reference evaluator, one subtree at a time,
+and for the golden queries from Person C's interpreter, which reads Person
+A's Arrow tables.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import optimizer  # noqa: E402
 from optimizer.cardinality_report import cell, compare, detail_table, summarize, summary_table  # noqa: E402
 
 OUT = Path(__file__).parent.parent / "docs" / "cardinality_estimates.md"
+GOLDEN = Path(__file__).parent / "fixtures" / "queries"
 
 
 # Why each suite query that can appear among the worst estimates is off. The
@@ -46,10 +49,19 @@ CAUSES = {
 }
 
 
-def _cause(query: str) -> str:
-    if query not in CAUSES:
-        raise KeyError(f"{query} is among the worst estimates: add the reason to CAUSES")
-    return CAUSES[query]
+HAVING = "the HAVING predicate reads an aggregate, which has no statistics, so it gets System R's 1/3."
+GOLDEN_CAUSES = {
+    **{q: HAVING for q in ("q14", "q15", "q16", "q17", "q18", "q19")},
+    "q20": "joins keep their inputs' full distinct counts (that is what makes estimates independent of "
+           "join order), so GROUP BY mktsegment, nation expects 5 x 24 combinations, capped at the rows "
+           "reaching it. Those rows come from 41 orders, so at most 41 combinations can occur, and 30 do.",
+}
+
+
+def _cause(query: str, causes: dict[str, str] = CAUSES) -> str:
+    if query not in causes:
+        raise KeyError(f"{query} is among the worst estimates: add the reason to the causes")
+    return causes[query]
 
 
 def counter(tables):
@@ -72,6 +84,25 @@ def suite_rows(optimized: bool):
     return out
 
 
+def golden_rows():
+    """Person A's golden queries, bound from SQL and optimized, on Person A's tiny dataset."""
+    from bench.data.generate import create_test_catalog, generate_dataset
+    from frontend import parse_and_bind
+    from runtime import Table, interpret
+
+    arrow = generate_dataset("tiny", seed=42)
+    catalog = create_test_catalog("tiny", seed=42)
+    tables = {name: Table.from_arrow(t, table=name) for name, t in arrow.items()}
+    out = []
+    for f in sorted(GOLDEN.glob("q*.sql")):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            plan, _ = optimizer.optimize(parse_and_bind(f.read_text(), catalog), catalog)
+        out += compare(f.stem, plan, catalog, lambda node: interpret(node, tables).num_rows)
+    sizes = ", ".join(f"{name} {t.num_rows:,}" for name, t in arrow.items())
+    return out, sizes
+
+
 def render() -> str:
     work = workload_rows()
     roots = {name: rows[0] for name, rows in work.items()}
@@ -83,6 +114,9 @@ def render() -> str:
     opt_all = summarize(optimized, by_kind=False)[0]
     worst = sorted(optimized, key=lambda r: -r.q_error)[:10]
     q = {name: r.q_error for name, r in roots.items()}
+    golden, golden_sizes = golden_rows()
+    golden_all = summarize(golden, by_kind=False)[0]
+    golden_worst = sorted(golden, key=lambda r: -r.q_error)[:5]
 
     lines = [
         "# Cardinality estimates vs actual row counts",
@@ -159,6 +193,19 @@ def render() -> str:
         "## 3. The same queries before optimization",
         "",
         summary_table(original),
+        "",
+        "## 4. Person A's 20 golden queries, after optimization",
+        "",
+        "The golden queries (`tests/fixtures/queries`), bound from SQL by the frontend and optimized, on",
+        f"Person A's dataset at scale `tiny` ({golden_sizes}). Actual counts come from Person C's interpreter.",
+        "",
+        summary_table(golden),
+        "",
+        f"{golden_all.within_2x:.0%} of the {golden_all.nodes} nodes are within 2x. The worst five:",
+        "",
+        detail_table(golden_worst, indent=False),
+        "",
+        *[f"* `{name}`: {_cause(name, GOLDEN_CAUSES)}" for name in dict.fromkeys(r.query for r in golden_worst)],
         "",
     ]
     return "\n".join(lines)

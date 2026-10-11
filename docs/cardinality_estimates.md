@@ -57,16 +57,16 @@ actual 3 is a q-error of 3.
 
 | node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all nodes | 274 | 1.00 | 1.60 | 6.06 | 93% | 65 | 39 |
-| Scan | 122 | 1.00 | 1.20 | 1.60 | 100% | 1 | 12 |
-| Project | 59 | 1.29 | 2.25 | 6.06 | 85% | 26 | 13 |
+| all nodes | 290 | 1.00 | 1.90 | 6.06 | 93% | 65 | 43 |
+| Scan | 126 | 1.00 | 1.20 | 1.60 | 100% | 1 | 12 |
+| Project | 63 | 1.29 | 2.25 | 6.06 | 84% | 26 | 15 |
 | Limit | 2 | 1.00 | 1.00 | 1.00 | 100% | 0 | 0 |
-| Sort | 6 | 1.03 | 1.29 | 1.29 | 100% | 2 | 0 |
-| Aggregate | 13 | 1.00 | 1.33 | 1.41 | 100% | 4 | 0 |
-| Filter | 15 | 1.00 | 3.00 | 3.00 | 87% | 1 | 4 |
+| Sort | 7 | 1.00 | 1.29 | 1.29 | 100% | 2 | 0 |
+| Aggregate | 17 | 1.00 | 1.33 | 1.41 | 100% | 4 | 0 |
+| Filter | 18 | 1.00 | 3.00 | 3.00 | 83% | 1 | 6 |
 | Join | 57 | 1.29 | 2.20 | 6.06 | 88% | 31 | 10 |
 
-93% of the 274 nodes are within 2x. The worst ten:
+93% of the 290 nodes are within 2x. The worst ten:
 
 | query | node | estimated | actual | q-error |
 |---|---|--:|--:|--:|
@@ -79,7 +79,7 @@ actual 3 is a q-error of 3.
 | five_way_join_in_a_bad_order | `Project[orders.o_id AS o_id, c_name]` | 13.6 | 5 | 2.73 |
 |  | `Join[kind=inner, cond=o_custkey = c_id]` | 13.6 | 5 | 2.73 |
 | forced_cross_product | `Project[emp.name AS emp_name, n_name]` | 2.6 | 6 | 2.30 |
-|  | `Join[kind=inner, cond=true]` | 2.6 | 6 | 2.30 |
+|  | `Join[kind=inner, cond=True]` | 2.6 | 6 | 2.30 |
 
 Every node in that list returns 6 rows or fewer. Why each query is off:
 
@@ -95,7 +95,7 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 | two_of_twenty | `Scan[sales, columns=[sale_id, amount]]` | 60.0 | 60 | 1.00 |
 | filter_only_column | `Scan[sales, columns=[sale_id], pushed=region = 'EU']` | 15.0 | 22 | 1.47 |
 | computed_projection | `Project[qty * amount AS value]` | 11.7 | 18 | 1.54 |
-|  | &nbsp;&nbsp;`Scan[sales, columns=[amount, qty], pushed=(region = 'EU') AND (qty > 2)]` | 11.7 | 18 | 1.54 |
+|  | &nbsp;&nbsp;`Scan[sales, columns=[amount, qty], pushed=region = 'EU' AND qty > 2]` | 11.7 | 18 | 1.54 |
 | select_star | `Scan[sales, pushed=qty > 3]` | 40.0 | 41 | 1.02 |
 | pushed_predicate_column | `Scan[sales, columns=[sale_id], pushed=amount > 100.0]` | 35.0 | 34 | 1.03 |
 | sort_key_only_column | `Limit[n=5]` | 5.0 | 5 | 1.00 |
@@ -109,6 +109,14 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 | having_on_aggregate | `Project[region]` | 1.3 | 4 | 3.00 |
 |  | &nbsp;&nbsp;`Filter[total > 1000.0]` | 1.3 | 4 | 3.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS total]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount]]` | 60.0 | 60 | 1.00 |
+| having_names_an_aggregate_the_select_list_drops | `Project[sales.region AS region]` | 1.3 | 3 | 2.25 |
+|  | &nbsp;&nbsp;`Filter[count(*) > 12]` | 1.3 | 3 | 2.25 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=sales.region, aggs=count(*) AS count(*)]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
+| order_by_an_aggregate_the_select_list_drops | `Project[region]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;`Sort[keys=sum(amount) DESC]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS sum(amount)]` | 4.0 | 4 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount]]` | 60.0 | 60 | 1.00 |
 | group_by_without_aggs | `Aggregate[group=region]` | 4.0 | 4 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
@@ -151,10 +159,10 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
-| stacked_filters | `Scan[sales, pushed=(qty > 2) AND (region = 'EU')]` | 11.7 | 18 | 1.54 |
-| filter_merges_with_pushed_predicate | `Scan[sales, columns=[sale_id], pushed=(amount > 50.0) AND (qty > 5)]` | 20.8 | 25 | 1.20 |
+| stacked_filters | `Scan[sales, pushed=qty > 2 AND region = 'EU']` | 11.7 | 18 | 1.54 |
+| filter_merges_with_pushed_predicate | `Scan[sales, columns=[sale_id], pushed=amount > 50.0 AND qty > 5]` | 20.8 | 25 | 1.20 |
 | filter_through_computed_project | `Project[sale_id, qty * amount AS value]` | 20.0 | 28 | 1.40 |
-|  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount, qty], pushed=(qty * amount) > 500.0]` | 20.0 | 28 | 1.40 |
+|  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount, qty], pushed=qty * amount > 500.0]` | 20.0 | 28 | 1.40 |
 | filter_through_sort | `Sort[keys=qty DESC, sale_id ASC]` | 20.0 | 19 | 1.05 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, qty], pushed=qty < 4]` | 20.0 | 19 | 1.05 |
 | filter_above_limit_must_not_push | `Filter[qty > 5]` | 4.4 | 5 | 1.12 |
@@ -162,7 +170,7 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Sort[keys=sale_id ASC]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[sale_id, qty]]` | 60.0 | 60 | 1.00 |
 | where_splits_across_inner_join | `Project[o_id, c_name]` | 3.9 | 6 | 1.55 |
-|  | &nbsp;&nbsp;`Join[kind=inner, cond=(o_custkey = c_id) AND ((o_custkey + c_nationkey) > 4)]` | 3.9 | 6 | 1.55 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id AND o_custkey + c_nationkey > 4]` | 3.9 | 6 | 1.55 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey], pushed=o_total > 100.0]` | 31.9 | 29 | 1.10 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name, c_nationkey], pushed=c_segment = 'AUTO']` | 4.0 | 4 | 1.00 |
 | single_side_on_conjuncts_of_inner_join | `Project[o_id]` | 13.3 | 14 | 1.05 |
@@ -190,18 +198,26 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 | left_join_or_with_preserved_side_must_not_push | `Project[customer.c_name AS c_name, orders.o_total AS o_total]` | 25.2 | 21 | 1.20 |
-|  | &nbsp;&nbsp;`Filter[(orders.o_total > 200.0) OR (customer.c_name = 'cust#11')]` | 25.2 | 21 | 1.20 |
+|  | &nbsp;&nbsp;`Filter[orders.o_total > 200.0 OR customer.c_name = 'cust#11']` | 25.2 | 21 | 1.20 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey]` | 41.0 | 34 | 1.21 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
 | left_join_on_conjuncts | `Project[c_name, o_total]` | 12.0 | 16 | 1.33 |
-|  | &nbsp;&nbsp;`Join[kind=left, cond=(c_id = o_custkey) AND (c_segment = 'AUTO')]` | 12.0 | 16 | 1.33 |
+|  | &nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey AND c_segment = 'AUTO']` | 12.0 | 16 | 1.33 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name, c_segment]]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total], pushed=o_status = 'F']` | 13.3 | 20 | 1.50 |
 | having_splits_on_group_key | `Filter[total > 1500.0]` | 1.0 | 2 | 2.00 |
 |  | &nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS total]` | 3.0 | 3 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount], pushed=region <> 'AP']` | 45.0 | 48 | 1.07 |
-| constant_false_over_global_aggregate_must_not_push | `Filter[false]` | 0.0 | 0 | 1.00 |
+| having_on_an_aggregate_of_a_group_key_must_not_push | `Project[region]` | 0.4 | 1 | 1.00 |
+|  | &nbsp;&nbsp;`Filter[max(region) = 'EU']` | 0.4 | 1 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=max(region) AS max(region)]` | 4.0 | 4 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
+| having_mixes_an_aggregate_and_a_group_key | `Project[region]` | 1.0 | 2 | 2.00 |
+|  | &nbsp;&nbsp;`Filter[sum(amount) > 1500.0]` | 1.0 | 2 | 2.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Aggregate[group=region, aggs=sum(amount) AS sum(amount)]` | 3.0 | 3 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region, amount], pushed=region <> 'AP']` | 45.0 | 48 | 1.07 |
+| constant_false_over_global_aggregate_must_not_push | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Aggregate[aggs=count(*) AS n]` | 1.0 | 1 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
 | filter_through_project_over_join | `Project[orders.o_id AS oid, customer.c_segment AS seg]` | 11.0 | 5 | 2.20 |
@@ -212,20 +228,20 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 | constant_date_comparison | `Scan[sales, columns=[sale_id], pushed=region = 'EU']` | 15.0 | 22 | 1.47 |
 | or_true_removes_the_filter | `Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
 | double_negation | `Scan[sales, columns=[sale_id], pushed=qty > 4]` | 33.3 | 35 | 1.05 |
-| contradiction_on_equalities | `Filter[false]` | 0.0 | 0 | 1.00 |
+| contradiction_on_equalities | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| contradiction_on_range | `Filter[false]` | 0.0 | 0 | 1.00 |
+| contradiction_on_range | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| satisfiable_point_range | `Scan[sales, columns=[sale_id], pushed=(qty >= 2) AND (qty <= 2)]` | 6.7 | 7 | 1.05 |
-| null_comparison_rejects_every_row | `Filter[false]` | 0.0 | 0 | 1.00 |
+| satisfiable_point_range | `Scan[sales, columns=[sale_id], pushed=qty >= 2 AND qty <= 2]` | 6.7 | 7 | 1.05 |
+| null_comparison_rejects_every_row | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| false_filter_over_join_and_sort | `Filter[false]` | 0.0 | 0 | 1.00 |
+| false_filter_over_join_and_sort | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Sort[keys=o_id ASC]` | 40.0 | 31 | 1.29 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[o_id, c_name]` | 40.0 | 31 | 1.29 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[orders.o_id AS o_id, customer.c_name AS c_name]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
-| empty_side_of_inner_join | `Filter[false]` | 0.0 | 0 | 1.00 |
+| empty_side_of_inner_join | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Project[o_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
@@ -233,27 +249,27 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 | empty_right_side_of_left_join_must_not_lift | `Project[c_name, o_total]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;`Join[kind=left, cond=c_id = o_custkey]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_name]]` | 12.0 | 12 | 1.00 |
-|  | &nbsp;&nbsp;&nbsp;&nbsp;`Filter[false]` | 0.0 | 0 | 1.00 |
+|  | &nbsp;&nbsp;&nbsp;&nbsp;`Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
 | global_aggregate_over_empty_must_not_lift | `Aggregate[aggs=count(*) AS n, sum(amount) AS s]` | 1.0 | 1 | 1.00 |
-|  | &nbsp;&nbsp;`Filter[false]` | 0.0 | 0 | 1.00 |
+|  | &nbsp;&nbsp;`Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[amount]]` | 60.0 | 60 | 1.00 |
-| grouped_aggregate_over_empty | `Filter[false]` | 0.0 | 0 | 1.00 |
+| grouped_aggregate_over_empty | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Aggregate[group=region, aggs=count(*) AS n]` | 4.0 | 4 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[region]]` | 60.0 | 60 | 1.00 |
-| limit_zero | `Filter[false]` | 0.0 | 0 | 1.00 |
+| limit_zero | `Filter[False]` | 0.0 | 0 | 1.00 |
 |  | &nbsp;&nbsp;`Sort[keys=sale_id ASC]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
 | folded_select_expressions | `Project[sale_id, 6 AS six, 3.0 AS three, 7 / 2 AS seven_halves, -4 AS neg]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id]]` | 60.0 | 60 | 1.00 |
-| contradiction_in_select_must_stay | `Project[sale_id, (amount = 10.0) AND (amount = 20.0) AS flag]` | 60.0 | 60 | 1.00 |
+| contradiction_in_select_must_stay | `Project[sale_id, amount = 10.0 AND amount = 20.0 AS flag]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount]]` | 60.0 | 60 | 1.00 |
 | noop_project_over_scan | `Scan[emp]` | 5.0 | 5 | 1.00 |
 | constant_conjuncts_in_join_and_scan | `Project[o_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id]` | 40.0 | 31 | 1.29 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey]]` | 40.0 | 40 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id]]` | 12.0 | 12 | 1.00 |
-| null_and_in_select_must_stay | `Project[sale_id, (amount > 100.0) AND NULL AS flag]` | 60.0 | 60 | 1.00 |
+| null_and_in_select_must_stay | `Project[sale_id, amount > 100.0 AND None AS flag]` | 60.0 | 60 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[sales, columns=[sale_id, amount]]` | 60.0 | 60 | 1.00 |
 | reordering_project_must_stay | `Project[name, id, dept_id, salary]` | 5.0 | 5 | 1.00 |
 |  | &nbsp;&nbsp;`Scan[emp]` | 5.0 | 5 | 1.00 |
@@ -278,13 +294,13 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[customer, columns=[c_id, c_nationkey]]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_id, n_name]]` | 5.0 | 5 | 1.00 |
 | forced_cross_product | `Project[emp.name AS emp_name, n_name]` | 2.6 | 6 | 2.30 |
-|  | &nbsp;&nbsp;`Join[kind=inner, cond=true]` | 2.6 | 6 | 2.30 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=True]` | 2.6 | 6 | 2.30 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[nation, columns=[n_name], pushed=n_region = 'AMERICA']` | 1.2 | 2 | 1.60 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=emp.dept_id = dept.id]` | 2.1 | 3 | 1.44 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[emp, columns=[name, dept_id]]` | 5.0 | 5 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Scan[dept, columns=[id], pushed=dept.budget > 500.0]` | 1.7 | 2 | 1.20 |
 | three_relation_conjunct | `Project[o_id]` | 13.3 | 7 | 1.90 |
-|  | &nbsp;&nbsp;`Join[kind=inner, cond=(o_custkey = c_id) AND (o_total > (c_balance + (n_id * 100.0)))]` | 13.3 | 7 | 1.90 |
+|  | &nbsp;&nbsp;`Join[kind=inner, cond=o_custkey = c_id AND o_total > c_balance + n_id * 100.0]` | 13.3 | 7 | 1.90 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Scan[orders, columns=[o_id, o_custkey, o_total]]` | 40.0 | 40 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;`Project[customer.c_id AS c_id, customer.c_balance AS c_balance, nation.n_id AS n_id]` | 12.0 | 12 | 1.00 |
 |  | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`Join[kind=inner, cond=c_nationkey = n_id]` | 12.0 | 12 | 1.00 |
@@ -373,11 +389,42 @@ Every node in that list returns 6 rows or fewer. Why each query is off:
 
 | node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| all nodes | 299 | 1.00 | 1.47 | 4.00 | 97% | 59 | 33 |
-| Project | 56 | 1.08 | 2.00 | 4.00 | 93% | 12 | 15 |
-| Scan | 122 | 1.00 | 1.00 | 1.04 | 100% | 0 | 0 |
-| Filter | 42 | 1.12 | 2.00 | 4.00 | 90% | 6 | 16 |
+| all nodes | 315 | 1.00 | 1.50 | 4.00 | 97% | 59 | 37 |
+| Project | 60 | 1.08 | 2.00 | 4.00 | 92% | 12 | 17 |
+| Scan | 126 | 1.00 | 1.00 | 1.04 | 100% | 0 | 0 |
+| Filter | 45 | 1.12 | 2.25 | 4.00 | 89% | 6 | 18 |
 | Limit | 3 | 1.00 | 1.00 | 1.00 | 100% | 0 | 0 |
-| Sort | 6 | 1.00 | 1.29 | 1.29 | 100% | 1 | 0 |
-| Aggregate | 13 | 1.00 | 1.33 | 2.00 | 100% | 4 | 0 |
+| Sort | 7 | 1.00 | 1.29 | 1.29 | 100% | 1 | 0 |
+| Aggregate | 17 | 1.00 | 1.33 | 2.00 | 100% | 4 | 0 |
 | Join | 57 | 1.24 | 1.43 | 2.00 | 100% | 36 | 2 |
+
+## 4. Person A's 20 golden queries, after optimization
+
+The golden queries (`tests/fixtures/queries`), bound from SQL by the frontend and optimized, on
+Person A's dataset at scale `tiny` (customer 100, part 100, orders 250, lineitem 1,000). Actual counts come from Person C's interpreter.
+
+| node type | nodes | median q-error | 90th percentile | worst | within 2x | over | under |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| all nodes | 101 | 1.07 | 1.98 | 7.14 | 90% | 25 | 17 |
+| Limit | 15 | 1.00 | 1.67 | 1.67 | 100% | 2 | 1 |
+| Sort | 15 | 1.48 | 2.88 | 2.88 | 80% | 5 | 5 |
+| Scan | 34 | 1.02 | 1.39 | 1.68 | 100% | 4 | 2 |
+| Project | 8 | 1.40 | 2.57 | 2.57 | 88% | 4 | 2 |
+| Join | 14 | 1.17 | 1.91 | 2.57 | 93% | 6 | 2 |
+| Aggregate | 8 | 1.04 | 3.94 | 3.94 | 88% | 2 | 0 |
+| Filter | 7 | 2.88 | 7.14 | 7.14 | 43% | 2 | 5 |
+
+90% of the 101 nodes are within 2x. The worst five:
+
+| query | node | estimated | actual | q-error |
+|---|---|--:|--:|--:|
+| q17 | `Filter[count(*) >= 2]` | 107.1 | 15 | 7.14 |
+| q20 | `Aggregate[group=customer.mktsegment, customer.nation, aggs=count(*) AS item_count, sum(lineitem.extended_price) AS revenue]` | 118.2 | 30 | 3.94 |
+| q15 | `Filter[sum(orders.total_price) > 50000.0]` | 5.0 | 15 | 3.00 |
+| q19 | `Sort[keys=total_revenue DESC]` | 8.3 | 24 | 2.88 |
+|  | `Filter[sum(lineitem.quantity) > 50]` | 8.3 | 24 | 2.88 |
+
+* `q17`: the HAVING predicate reads an aggregate, which has no statistics, so it gets System R's 1/3.
+* `q20`: joins keep their inputs' full distinct counts (that is what makes estimates independent of join order), so GROUP BY mktsegment, nation expects 5 x 24 combinations, capped at the rows reaching it. Those rows come from 41 orders, so at most 41 combinations can occur, and 30 do.
+* `q15`: the HAVING predicate reads an aggregate, which has no statistics, so it gets System R's 1/3.
+* `q19`: the HAVING predicate reads an aggregate, which has no statistics, so it gets System R's 1/3.

@@ -14,8 +14,10 @@ aggregate arguments, sort keys, and predicates.
 
 A few literal pairs are left unfolded on purpose, because the result would
 depend on runtime semantics the contract doesn't pin down: integer
-division, any division by zero, ``%``, results outside int64, and
-comparisons between different types.
+division, any division by zero, ``%``, results outside int64,
+comparisons between different types, and comparisons with a string that
+reads as a date but isn't written YYYY-MM-DD (``'19950101'``): as strings
+it orders differently from the date the runtime reads it as.
 
 Predicate rules apply only where a predicate decides whether a row is kept:
 Filter predicates, join conditions, and Scan.pushed_predicate. There, NULL
@@ -50,6 +52,7 @@ the child at all.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import operator
 from typing import Any
 
@@ -179,7 +182,19 @@ def _fold_literals(op: str, a: Literal, b: Literal) -> Literal | None:
 def _comparable(a: Literal, b: Literal) -> bool:
     if a.dtype in _NUMERIC and b.dtype in _NUMERIC:
         return _is_number(a) and _is_number(b)
+    if _odd_date(a) or _odd_date(b):
+        return False
     return a.dtype == b.dtype and type(a.value) is type(b.value)
+
+
+def _odd_date(lit: Literal) -> bool:
+    """A string that reads as a date but isn't written YYYY-MM-DD, like '19950101'."""
+    if not isinstance(lit.value, str):
+        return False
+    try:
+        return datetime.date.fromisoformat(lit.value).isoformat() != lit.value
+    except ValueError:
+        return False
 
 
 def _is_number(lit: Literal) -> bool:
