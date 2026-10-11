@@ -2,7 +2,6 @@
 
 import pytest
 
-import opt_ir  # noqa: F401
 from ir.dtype import DType
 from ir.expr import Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Limit, Scan, Sort

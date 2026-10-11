@@ -13,7 +13,6 @@ import warnings
 
 import pytest
 
-import opt_ir  # noqa: F401
 import opt_query_suite as S
 import opt_stats_workload as W
 import optimizer

@@ -15,7 +15,6 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).parent), str(Path(__file__).parent.parent)]
 
-import opt_ir  # noqa: E402,F401
 import opt_query_suite as S  # noqa: E402
 import opt_stats_workload as W  # noqa: E402
 from opt_reference_eval import evaluate  # noqa: E402

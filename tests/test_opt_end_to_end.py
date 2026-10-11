@@ -11,7 +11,6 @@ import warnings
 
 import pytest
 
-import opt_ir  # noqa: F401
 import opt_query_suite as S
 import optimizer
 from opt_reference_eval import _is_ordered

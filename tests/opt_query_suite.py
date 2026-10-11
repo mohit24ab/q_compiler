@@ -20,7 +20,6 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import opt_ir  # noqa: F401  (must come before any ir import)
 from ir.dtype import DType
 from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort

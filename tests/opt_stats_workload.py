@@ -24,7 +24,6 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import opt_ir  # noqa: F401  (must come before any ir import)
 from ir.dtype import DType
 from ir.expr import UnaryOp
 from ir.nodes import Aggregate, Filter, Limit
