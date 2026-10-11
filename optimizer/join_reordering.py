@@ -67,6 +67,7 @@ from ir.nodes import Aggregate, Filter, Join, Limit, Project, Sort
 from optimizer.columns import column_refs, output_columns, resolves
 from optimizer.cost import CostModel
 from optimizer.expressions import TRUE, conjoin, split_conjuncts
+from optimizer.keys import ordering_is_total
 
 DP_LIMIT = 8
 MIN_GAIN = 0.01
@@ -262,7 +263,13 @@ class _Reorderer:
         else:
             inherited = True  # a node kind this pass doesn't know: assume order matters
         known = isinstance(node, (Project, Aggregate, Filter, Join))
-        ordered = rows_ordered or not known  # Sort, Limit, and node kinds this pass doesn't know
+        if isinstance(node, Sort) and self.keep_row_order and ordering_is_total(node, self.catalog):
+            # A total ordering re-determines the row order whatever order the
+            # rows arrive in, so no reordering below it is observable -- not
+            # even through a Limit above, whose top-n is then forced too.
+            ordered = False
+        else:
+            ordered = rows_ordered or not known  # Sort, Limit, and node kinds this pass doesn't know
         children = [self.visit(c, inherited, ordered) for c in node.children]
         if all(new is old for new, old in zip(children, node.children)):
             return node

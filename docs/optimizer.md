@@ -139,7 +139,19 @@ leaves.
   the query's result;
 * the best tree isn't at least 1% cheaper than the current one.
 
-*Row ordering under Sort/Limit:* Reordering inner joins changes the output order of rows. Because unique primary-key/group-key tie-breakers were added across all golden queries' `ORDER BY` clauses, all sorted results are totally ordered. The default optimizer pipeline runs with `JoinReordering(keep_row_order=False)`, enabling full join tree reordering across all queries while Contract §7 verification remains strict and deterministic.
+*Row ordering under Sort/Limit:* Reordering inner joins changes the output order of rows, which
+is observable under a Sort whose keys tie, and under a Limit, which then keeps different rows.
+Unique primary-key/group-key tie-breakers were added across all golden queries' `ORDER BY`
+clauses, so every ordering in the golden suite is now total. That is a property of those
+queries, though, not of the optimizer's input in general, so the pass tests it per query rather
+than assuming it: a region under a Sort is reordered only when the sort keys contain a key of
+the rows being sorted, so no two tie and the top-n is forced. `optimizer/keys.py` derives those
+keys from catalog statistics -- a column with one value per row and no nulls, carried up through
+the joins that cannot duplicate it. A bare `LIMIT` with no `ORDER BY`, an `ORDER BY` whose keys
+all repeat, and anything under an outer join stay guarded. On the golden suite this reorders
+q10, as a blanket `keep_row_order=False` would; unlike that, it still refuses the tying top-n in
+`test_reordering_under_a_limit_would_keep_other_rows`, where reordering demonstrably returns a
+different five rows. Contract §7 verification is unchanged and remains strictly row-for-row.
 
 A LEFT join is never part of a region: it is a leaf, reordered around but never through.
 
