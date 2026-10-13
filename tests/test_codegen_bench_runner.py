@@ -6,7 +6,7 @@ import types
 import pytest
 
 from bench import runner
-from bench.aliases import AliasError, alias_map, resolve_aliases
+from bench.aliases import AliasError, resolve_aliases
 from runtime import interpret
 from runtime._compat import Filter, Join, Limit, format_plan
 

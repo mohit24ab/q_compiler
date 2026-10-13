@@ -1,6 +1,5 @@
 """Phase C7: demo.py and the generated sources committed in bench/samples/."""
 import ast
-import io
 from pathlib import Path
 
 import pytest

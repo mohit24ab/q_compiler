@@ -5,7 +5,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from catalog.catalog import Catalog
-from catalog.stats import ColumnStats
 from ir.dtype import DType
 from ir.nodes import Scan
 
@@ -34,7 +33,7 @@ def sample_parquet_file(tmp_path: Path) -> Path:
 def sample_csv_file(tmp_path: Path) -> Path:
     file_path = tmp_path / "sample.csv"
     content = "id,region,score\n1,East,100\n2,West,200\n3,East,300\n"
-    file_path.write_text(content)
+    file_path.write_text(content, encoding="utf-8")
     return file_path
 
 

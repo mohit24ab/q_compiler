@@ -46,6 +46,22 @@ from optimizer.ablation import (  # noqa: E402
 OUT = Path(__file__).parent.parent / "docs" / "ablation"
 
 
+def echo(text: str) -> None:
+    """Print a report to a console that may not be able to spell it.
+
+    The reports name the selectivity rho and draw arrows between pass names. A
+    Windows console is cp1252, which encodes neither, so echoing a report that
+    had just been written raised UnicodeEncodeError and lost the whole run after
+    the work was done. The files are always utf-8; only the echo gives way.
+
+    bench/runner.py has the same guard as a printable() helper. It is repeated
+    here rather than imported because --executor reference is meant to run with
+    nothing but the optimizer, and bench pulls in the frontend and pyarrow.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(encoding, "backslashreplace").decode(encoding, "replace"))
+
+
 def reference_executor():
     from opt_reference_eval import evaluate
 
@@ -89,7 +105,8 @@ def codegen_executor(scale: int, golden_scale: str):
     golden_catalog = create_test_catalog(golden_scale, seed=42)
     golden_tables = {name: Table.from_arrow(t, table=name) for name, t in arrow.items()}
     fixtures = Path(__file__).parent / "fixtures" / "queries"
-    golden_queries = [(f.stem, parse_and_bind(f.read_text(), golden_catalog)) for f in sorted(fixtures.glob("q*.sql"))]
+    golden_queries = [(f.stem, parse_and_bind(f.read_text(encoding="utf-8"), golden_catalog))
+                      for f in sorted(fixtures.glob("q*.sql"))]
     golden_sizes = ", ".join(f"{t} {tab.num_rows:,}" for t, tab in arrow.items())
     golden = Workload("golden", golden_queries, golden_catalog, compiled(golden_catalog, golden_tables), same,
                       f"Person A's dataset at scale `{golden_scale}`: {golden_sizes}")
@@ -165,7 +182,7 @@ def run(executor: str, scale: int, golden_scale: str, repeat: int, note: str) ->
         by_workload[w.name] = ms
         measurements += ms
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / f"{executor}.csv").write_text(to_csv(measurements))
+    (OUT / f"{executor}.csv").write_text(to_csv(measurements), encoding="utf-8")
     passes = [p.name for p in optimizer.default_passes()]
     command = (f"--executor codegen --scale {scale} --golden-scale {golden_scale}"
                if executor == "codegen" else "--executor reference")
@@ -188,10 +205,13 @@ def run(executor: str, scale: int, golden_scale: str, repeat: int, note: str) ->
     ]
     for w in workloads:
         lines += _section(w, by_workload[w.name], passes)
-    (OUT / f"{executor}.md").write_text("\n".join(lines))
+    # Explicit utf-8: the report names the selectivity rho, and on a Windows box
+    # the default is cp1252, which cannot encode it -- regenerating the ablation
+    # there died on UnicodeEncodeError before writing anything.
+    (OUT / f"{executor}.md").write_text("\n".join(lines), encoding="utf-8")
     for w in workloads:
-        print(f"== {w.name}")
-        print(summary_table(by_workload[w.name]))
+        echo(f"== {w.name}")
+        echo(summary_table(by_workload[w.name]))
     print(f"wrote {OUT / executor}.csv and .md")
 
 
@@ -211,8 +231,9 @@ def order() -> None:
         "",
     ]
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "pass_order.md").write_text("\n".join(lines))
-    print(order_table(results))
+    # Explicit utf-8, as above: this one writes an arrow between pass names.
+    (OUT / "pass_order.md").write_text("\n".join(lines), encoding="utf-8")
+    echo(order_table(results))
 
 
 def main() -> None:

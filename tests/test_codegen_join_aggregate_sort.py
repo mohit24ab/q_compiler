@@ -5,7 +5,7 @@ import pytest
 
 from codegen import compile_and_run, generate
 from runtime import compare_tables, interpret
-from runtime._compat import AggCall, Aggregate, DType, Filter, Join, Limit, Project, Sort, UnaryOp
+from runtime._compat import AggCall, Aggregate, DType, Filter, Join, Limit, Sort, UnaryOp
 
 from codegen_fixtures import (
     CATALOG, JOIN_AGG_PLANS, SAMPLE_PLANS, SINGLE_TABLE_PLANS, TABLES, col, lit, op, scan,

@@ -4,15 +4,14 @@ Correctness for every query in the suite is in test_opt_differential.py,
 including negative controls for the rewrites that must NOT happen.
 """
 
-import dataclasses
 
 import pytest
 
 import opt_query_suite as S
 from ir.dtype import DType
 from ir.expr import Literal, UnaryOp
-from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
-from opt_query_suite import CATALOG, agg, col, date, join, keep, lit, op, project, scan
+from ir.nodes import Aggregate, Filter, Join, Project, Scan, Sort
+from opt_query_suite import CATALOG, col, date, join, keep, lit, op, project, scan
 from optimizer.constant_folding import FALSE, ConstantFolding, fold, is_empty, simplify_predicate
 from optimizer.expressions import TRUE
 

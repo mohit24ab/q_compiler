@@ -9,7 +9,7 @@ from frontend.binder import parse_and_bind
 from frontend.resolver import Resolver, SemanticError
 from frontend.typecheck import TypeChecker, SemanticTypeError
 from ir.dtype import DType
-from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
+from ir.expr import BinaryOp, ColumnRef, Literal
 from ir.nodes import Aggregate, Filter, Join, Project, Scan, Sort
 
 
