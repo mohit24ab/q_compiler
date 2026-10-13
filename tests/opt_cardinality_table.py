@@ -96,7 +96,8 @@ def golden_rows():
     for f in sorted(GOLDEN.glob("q*.sql")):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            plan, _ = optimizer.optimize(parse_and_bind(f.read_text(), catalog), catalog)
+            plan, _ = optimizer.optimize(
+                parse_and_bind(f.read_text(encoding="utf-8"), catalog), catalog)
         out += compare(f.stem, plan, catalog, lambda node: interpret(node, tables).num_rows)
     sizes = ", ".join(f"{name} {t.num_rows:,}" for name, t in arrow.items())
     return out, sizes
