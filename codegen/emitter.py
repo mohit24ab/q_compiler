@@ -10,6 +10,11 @@
 
 Tracks indentation, hands out unique variable names, and collects imports into a
 de-duplicated block at the top of the module.
+
+Plan text reaches the source only through comment(), a line's `note`, or the module
+docstring, and all three escape it: a SQL string literal may hold a newline, and a raw
+newline in a comment would end the comment and turn the rest into code. line() refuses
+any text that would span more than one physical line.
 """
 from __future__ import annotations
 
@@ -18,6 +23,15 @@ import re
 from contextlib import contextmanager
 
 INDENT = "    "
+_LINE_BREAKS = re.compile(r"[\r\n\x00]")  # what ends a line (or the source) for Python
+
+
+def escape_unprintable(text: str, keep: str = "") -> str:
+    """`text` with every unprintable character (newline, CR, NUL, tab, U+2028...) except
+    those in `keep` written as its escape sequence, e.g. a newline becomes a backslash
+    and an `n`."""
+    return "".join(ch if ch.isprintable() or ch in keep
+                   else ch.encode("unicode_escape").decode("ascii") for ch in text)
 
 
 class Emitter:
@@ -29,8 +43,13 @@ class Emitter:
         self._reserved: set[str] = {"tables", "run"}
 
     # ---------------------------------------------------------------- body
-    def line(self, text: str = "") -> None:
-        """Append one line at the current indentation (blank lines stay blank)."""
+    def line(self, text: str = "", note: str | None = None) -> None:
+        """Append one line at the current indentation (blank lines stay blank), with an
+        optional trailing `# note` escaped like comment()."""
+        if _LINE_BREAKS.search(text):
+            raise ValueError(f"an emitted line must be one physical line: {text!r}")
+        if note is not None:
+            text = f"{text}  # {escape_unprintable(note)}"
         self._lines.append(f"{INDENT * self._depth}{text}" if text else "")
 
     def lines(self, text: str) -> None:
@@ -39,8 +58,8 @@ class Emitter:
             self.line(ln)
 
     def comment(self, text: str) -> None:
-        for ln in text.splitlines() or [""]:
-            self.line(f"# {ln}".rstrip())
+        """One comment line; unprintable characters in `text` are escaped, never emitted."""
+        self.line(f"# {escape_unprintable(text)}".rstrip())
 
     def blank(self) -> None:
         if self._lines and self._lines[-1] != "" and not self._lines[-1].endswith(":"):
@@ -102,7 +121,10 @@ class Emitter:
     def source(self, docstring: str | None = None) -> str:
         parts = []
         if docstring is not None:
-            text = docstring.replace("\\", "\\\\").replace('"""', r"\"\"\"").rstrip()
+            # Backslashes first, so the escapes added after them stay escapes: the
+            # module's __doc__ is exactly `docstring` again.
+            text = docstring.rstrip().replace("\\", "\\\\").replace('"""', r"\"\"\"")
+            text = escape_unprintable(text, keep="\n")
             parts.append(f'"""{text}\n"""')
         if self._imports:
             parts.append("\n".join(self._imports))
