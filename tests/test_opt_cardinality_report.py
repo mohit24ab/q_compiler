@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-import opt_ir  # noqa: F401
 import opt_query_suite as S
 from opt_reference_eval import evaluate
 from optimizer.cardinality_report import NodeEstimate, cell, compare, detail_table, summarize, summary_table

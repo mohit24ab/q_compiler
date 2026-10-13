@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-import opt_ir  # noqa: F401
 import opt_query_suite as S
 import optimizer
 from ir.nodes import Filter, Scan
@@ -104,7 +103,7 @@ def test_csv_and_summary():
                       configs=[Config("all passes", tuple(PASSES)), Config("no passes", ())])
     lines = to_csv(ms).splitlines()
     assert lines[0] == ("query,config,runtime_ms,result_rows,rows_scanned,values_read,"
-                        "estimated_cost_us,same_result")
+                        "estimated_cost_us,same_result,workload")
     assert len(lines) == 1 + 4
     table = summary_table(ms).splitlines()
     assert [row.split(" | ")[0] for row in table[2:]] == ["| all passes", "| no passes"]

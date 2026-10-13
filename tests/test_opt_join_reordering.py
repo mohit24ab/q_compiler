@@ -13,7 +13,6 @@ import warnings
 
 import pytest
 
-import opt_ir  # noqa: F401
 import opt_query_suite as S
 import optimizer
 from ir.dtype import DType
@@ -422,6 +421,23 @@ def test_reordering_under_a_limit_would_keep_other_rows():
     assert reordered is not plan
     with pytest.raises(AssertionError, match="ordered rows differ"):
         assert_equivalent(plan, reordered, STAR_TABLES)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        final, _ = optimizer.optimize(plan, STAR)
+    assert_equivalent(plan, final, STAR_TABLES)
+
+
+def test_a_conjunct_over_three_tables_that_is_their_only_link():
+    # d1_id + d2_id = d3_id reads all three tables and no conjunct links two of them, so
+    # every plan needs a cross product. The DP found no split into linked halves and
+    # raised KeyError; it now plans the region again with cross products allowed.
+    region = join(join(scan("d2"), scan("d1", pushed=op("<=", col("d1_id"), lit(5))), TRUE), scan("d3"),
+                  op("=", op("+", col("d1_id"), col("d2_id")), col("d3_id")))
+    plan = project(region, *keep("d1_name", "d2_name", "d3_name"))
+    graph = build_graph(leaves_of(region), region_conjuncts(region), STAR)
+    best = plan_joins(graph, CostModel(STAR))
+    assert best.algorithm == "dp"
+    assert [j.condition == TRUE for j in joins(best.plan)].count(True) == 1
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         final, _ = optimizer.optimize(plan, STAR)

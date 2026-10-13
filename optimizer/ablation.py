@@ -102,6 +102,7 @@ class Measurement:
     values_read: int
     estimated_cost_us: float
     same_result: bool
+    workload: str = ""  # which query set the query belongs to (e.g. "golden", "suite")
 
 
 def run_ablation(
@@ -111,6 +112,7 @@ def run_ablation(
     repeat: int = 3,
     configs: list[Config] | None = None,
     same: Callable[[list, list], bool] | None = None,
+    workload: str = "",
 ) -> list[Measurement]:
     """Execute every query under every configuration. See the module docstring."""
     from optimizer import default_passes
@@ -134,7 +136,7 @@ def run_ablation(
                 query=name, config=config.name, runtime_ms=best * 1000, result_rows=len(result),
                 rows_scanned=rows_scanned, values_read=values_read,
                 estimated_cost_us=model.cost(optimized).total / 1000,
-                same_result=same(result, reference),
+                same_result=same(result, reference), workload=workload,
             ))
     return out
 
