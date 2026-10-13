@@ -9,7 +9,6 @@ import dataclasses
 
 import pytest
 
-import opt_ir  # noqa: F401
 import opt_query_suite as S
 from ir.expr import UnaryOp
 from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan
@@ -114,6 +113,30 @@ def test_through_aggregate_on_group_key_only():
     assert filters(out) == [op(">", col("total"), lit(1500.0))]  # HAVING on SUM stays
     (f,) = find(out, Filter)
     assert isinstance(f.child, Aggregate)
+
+
+def test_aggregate_calls_never_cross_the_aggregate():
+    # The binder's HAVING form repeats the call. HAVING COUNT(*) > 12 reads no
+    # column at all, and must still stay above the Aggregate that counts.
+    out = push(S.having_names_an_aggregate_the_select_list_drops())
+    (f,) = find(out, Filter)
+    assert isinstance(f.child, Aggregate)
+    assert pushed(out) == {"sales": []}
+
+
+def test_aggregate_of_a_group_key_stays_above_the_aggregate():
+    out = push(S.having_on_an_aggregate_of_a_group_key_must_not_push())
+    (f,) = find(out, Filter)
+    assert isinstance(f.child, Aggregate)
+    assert pushed(out) == {"sales": []}
+
+
+def test_group_key_conjunct_pushes_while_the_aggregate_conjunct_stays():
+    out = push(S.having_mixes_an_aggregate_and_a_group_key())
+    assert pushed(out) == {"sales": [op("<>", col("region"), lit("AP"))]}
+    (f,) = find(out, Filter)
+    assert isinstance(f.child, Aggregate)
+    assert f.predicate.op == ">"
 
 
 def test_left_join_where_on_preserved_side_pushes_left():

@@ -13,6 +13,9 @@ works out what it needs from its own children:
     Aggregate  columns in the group keys + columns read by the aggregates
                the parent uses. Aggregates nobody uses are dropped.
                Group keys are never dropped, because they define the groups.
+               An aggregate is used if something above names its alias, or
+               repeats its call: ``HAVING COUNT(*) > 3`` uses ``COUNT(*)``
+               even when the SELECT list doesn't.
     Scan       ``columns`` narrowed to those some reference can resolve to.
                A column only ``pushed_predicate`` reads is dropped too:
                codegen filters the full table before narrowing to
@@ -53,7 +56,9 @@ from ir.dtype import DType
 from ir.expr import ColumnRef
 from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
 
-from optimizer.columns import Ref, column_refs, output_columns, scanned_tables, table_schema
+from optimizer.columns import (
+    AGGREGATE, Ref, aggregate_ref, column_refs, output_columns, requirements, scanned_tables, table_schema,
+)
 
 ALL = None  # requirement sentinel: the parent needs every output column
 
@@ -95,12 +100,12 @@ class _Pruner:
     # -- pass-through nodes ------------------------------------------------
 
     def _unary(self, node: Any, req: set[Ref] | None, uses: Any) -> Any:
-        child_req = ALL if req is ALL else req | column_refs(uses)
+        child_req = ALL if req is ALL else req | requirements(uses)
         child = self._narrow_join(self.prune(node.child, child_req), child_req)
         return _with_children(node, [child])
 
     def _join(self, node: Join, req: set[Ref] | None) -> Any:
-        child_req = ALL if req is ALL else req | column_refs(node.condition)
+        child_req = ALL if req is ALL else req | requirements(node.condition)
         left = self._narrow_join(self.prune(node.left, child_req), child_req)
         right = self._narrow_join(self.prune(node.right, child_req), child_req)
         return _with_children(node, [left, right])
@@ -112,7 +117,10 @@ class _Pruner:
         if req is not ALL:
             wanted = {name for _, name in req}
             exprs = [(e, a) for e, a in node.exprs if a in wanted] or [_cheapest_expr(node.exprs)]
-        child = self.prune(node.child, column_refs([e for e, _ in exprs]))
+        child_req = requirements([e for e, _ in exprs])
+        if req is not ALL:  # aggregate results named above the Project, as an ORDER BY can
+            child_req |= {r for r in req if r[0] == AGGREGATE}
+        child = self.prune(node.child, child_req)
         if len(exprs) == len(node.exprs):
             return _with_children(node, [child])
         return dataclasses.replace(node, child=child, exprs=exprs)
@@ -121,7 +129,7 @@ class _Pruner:
         aggs = node.aggs
         if req is not ALL:
             wanted = {name for _, name in req}
-            aggs = [(c, a) for c, a in node.aggs if a in wanted]
+            aggs = [(c, a) for c, a in node.aggs if a in wanted or aggregate_ref(c) in req]
             if not aggs and not node.group_keys and node.aggs:
                 # A global aggregate returns exactly one row however many
                 # aggregates it computes. Keep one, so it is not left with

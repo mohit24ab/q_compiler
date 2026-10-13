@@ -2,7 +2,6 @@
 
 import pytest
 
-import opt_ir  # noqa: F401
 from ir.expr import UnaryOp
 from ir.nodes import Aggregate, Scan
 from opt_query_suite import CATALOG, SCHEMAS, agg, col, join, keep, lit, op, project, scan

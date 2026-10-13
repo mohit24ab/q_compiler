@@ -116,10 +116,16 @@ def find_columns(columns, name: str, table: str | None = None) -> list[int]:
 
 
 class Table:
-    def __init__(self, columns: list[Column]):
+    def __init__(self, columns: list[Column], num_rows: int | None = None):
+        """`num_rows` matters only when there are no columns: such a table still has
+        rows (a Scan pruned to no columns under COUNT(*)), and nothing else can say how
+        many. When given alongside columns it must agree with them."""
         lengths = {len(c) for c in columns}
+        if num_rows is not None:
+            lengths.add(int(num_rows))
         if len(lengths) > 1:
-            raise ValueError(f"columns have differing lengths: {sorted(lengths)}")
+            raise ValueError(f"columns have differing lengths: {sorted(lengths)}"
+                             + (f" (num_rows={num_rows})" if num_rows is not None else ""))
         self.columns = list(columns)
         self._num_rows = lengths.pop() if lengths else 0
 
@@ -157,11 +163,11 @@ class Table:
 
     # ---------------------------------------------------------------- reshaping
     def select(self, names: list[str]) -> "Table":
-        return Table([self.column(n) for n in names])
+        return Table([self.column(n) for n in names], self._num_rows)
 
     def take(self, indices) -> "Table":
         idx = np.asarray(indices, dtype=np.int64)
-        return Table([c.take(idx) for c in self.columns]) if self.columns else self
+        return Table([c.take(idx) for c in self.columns], len(idx))
 
     def filter(self, mask: np.ndarray) -> "Table":
         return self.take(np.flatnonzero(mask))
@@ -189,16 +195,16 @@ class Table:
                     np.ones(len(p), bool) if p.valid is None else p.valid for p in parts
                 ])
             cols.append(Column(c.name, c.dtype, values, valid, c.table))
-        return Table(cols)
+        return Table(cols, sum(t.num_rows for t in tables))
 
     def with_table_name(self, table: str) -> "Table":
-        return Table([c.renamed(table=table) for c in self.columns])
+        return Table([c.renamed(table=table) for c in self.columns], self._num_rows)
 
     # ---------------------------------------------------------------- row view
     def to_rows(self) -> list[tuple]:
         """Rows as tuples of Python values (None for NULL, datetime.date for DATE)."""
         cols = [c.to_pylist() for c in self.columns]
-        return list(zip(*cols)) if cols else []
+        return list(zip(*cols)) if cols else [()] * self._num_rows
 
     def to_pydict(self) -> dict[str, list]:
         return {c.name: c.to_pylist() for c in self.columns}
@@ -210,7 +216,7 @@ class Table:
         cols = []
         for i, (name, dtype, table) in enumerate(fields):
             cols.append(Column.from_pylist(name, dtype, [r[i] for r in rows], table))
-        return Table(cols)
+        return Table(cols, len(rows))
 
     @staticmethod
     def from_pydict(data: dict[str, list], schema: list[tuple[str, DType]],
@@ -230,7 +236,7 @@ class Table:
                 arr = arr.fill_null(_FILLER[dtype.name])
             values = arr.to_numpy(zero_copy_only=False).astype(_NP_DTYPE[dtype.name])
             cols.append(Column(name, dtype, values, valid, table))
-        return Table(cols)
+        return Table(cols, arrow_table.num_rows)
 
     # ---------------------------------------------------------------- display
     def format(self, max_rows: int = 20) -> str:

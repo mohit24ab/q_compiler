@@ -11,7 +11,6 @@ import random
 
 import pytest
 
-import opt_ir  # noqa: F401
 from ir.dtype import DType
 from ir.nodes import Limit, Sort
 from opt_query_suite import SuiteCatalog, agg, col, join, keep, lit, op, project, scan

@@ -46,12 +46,19 @@ The pass leaves a region alone when:
     Reordering changes the order of a join's output columns, which only a
     Project or Aggregate above it makes irrelevant. The binder always puts
     a Project on top;
-  * a Sort or Limit is above it (``keep_row_order``, on by default).
-    Reordering changes the order of the join's output rows. Under a Sort
-    that only reorders rows whose sort keys tie, and under a Limit it
-    changes which rows are kept. Both are legal SQL, but Contract §7 asks
-    for identical rows in order under ORDER BY, and the team's differential
-    harness checks exactly that;
+  * a Sort or Limit is above it whose row order the reordering could be
+    observed through (``keep_row_order``, on by default). Reordering changes
+    the order of the join's output rows. Under a Sort that only reorders
+    rows whose sort keys tie, and under a Limit it changes which rows are
+    kept. Both are legal SQL, but Contract §7 asks for identical rows in
+    order under ORDER BY, and the team's differential harness checks exactly
+    that. A Sort whose keys contain a key of what it sorts is exempt: with
+    no two rows tied the sorted order is forced, so nothing below it shows
+    through, and a Limit above it keeps a forced top-n too. ``optimizer/
+    keys.py`` decides that, and only on evidence -- a column the catalog
+    reports as one value per row with no nulls, carried up through the joins
+    that cannot duplicate it. A bare LIMIT with no ORDER BY, and an ORDER BY
+    whose keys all repeat, stay guarded;
   * the best plan is not at least 1% cheaper than the current one. Equal
     cost alternatives are not worth a change, and this keeps the pass
     stable when it runs again on its own output.

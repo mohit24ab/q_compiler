@@ -139,6 +139,15 @@ def traces_text(traces) -> str | None:
     return render_traces(traces)
 
 
+def sql_aliases(sql: str) -> dict[str, str]:
+    """alias -> table for each table the SQL gives an alias (`FROM customer c`), read
+    with the same parser the binder uses. Called after the binder accepted the SQL."""
+    import sqlglot
+    from sqlglot import exp
+    return {t.alias: t.name for t in sqlglot.parse_one(sql).find_all(exp.Table)
+            if t.alias and t.alias != t.name}
+
+
 def timing_table(p: Printer, rows):
     """rows: [(label, ms)], the first one is the baseline."""
     s = p.s
@@ -168,12 +177,12 @@ def run_demo(sql: str, scale: str = "tiny", runs: int = 3, max_rows: int = 15,
     plan = resolve_aliases(bound, catalog)
     p.section("Bound plan", "frontend.binder.parse_and_bind")
     p.block(format_plan(plan))
-    has_sql_aliases = any(f" {a} " in f" {sql} " for a in ("c", "o", "l", "p", "s"))
     if aliases:
         resolved = ", ".join(f"{a} {s.arrow} {t}" for a, t in aliases.items())
         p(s.dim(f"  (alias qualifiers resolved to table names: {resolved}; see bench/aliases.py)"))
-    elif has_sql_aliases:
-        p(s.dim(f"  (alias qualifiers resolved to table names; canonical table names used in bound plan)"))
+    elif written := sql_aliases(sql):
+        resolved = ", ".join(f"{a} {s.arrow} {t}" for a, t in written.items())
+        p(s.dim(f"  (alias qualifiers resolved to table names by the binder: {resolved})"))
 
     optimized, traces = optimize(plan, catalog)
     p.section("Optimized plan", opt_label)

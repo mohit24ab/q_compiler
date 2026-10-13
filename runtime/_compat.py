@@ -1,23 +1,15 @@
 """Single import point for IR classes used by Person C's code and tests.
 
-Uses Person A's real `ir` package when it exists; otherwise falls back to the
-temporary stand-in. When `ir/` lands on main, nothing else needs to change.
+Re-exports Person A's `ir` package. (Until `ir/` landed on main this fell back to a
+stand-in copy, runtime/_ir_standin.py; both are gone now that the real IR is complete.)
 """
-try:
-    from ir.dtype import DType
-    from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
-    from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
-    from ir.printer import format_plan
-    USING_STANDIN = False
-except ImportError:  # Person A's IR is not on this branch yet
-    from runtime._ir_standin import (  # noqa: F401
-        AggCall, Aggregate, BinaryOp, ColumnRef, DType, Filter, Join, Limit,
-        Literal, Project, Scan, Sort, UnaryOp, format_plan,
-    )
-    USING_STANDIN = True
+from ir.dtype import DType
+from ir.expr import AggCall, BinaryOp, ColumnRef, Literal, UnaryOp
+from ir.nodes import Aggregate, Filter, Join, Limit, Project, Scan, Sort
+from ir.printer import format_plan
 
 __all__ = [
     "DType", "AggCall", "BinaryOp", "ColumnRef", "Literal", "UnaryOp",
     "Aggregate", "Filter", "Join", "Limit", "Project", "Scan", "Sort",
-    "format_plan", "USING_STANDIN",
+    "format_plan",
 ]

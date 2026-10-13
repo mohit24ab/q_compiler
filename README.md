@@ -29,10 +29,12 @@ python -m pytest -q
 CI runs exactly that on every push and pull request (`.github/workflows/ci.yml`) — the
 Contract §8 "main stays green" requirement.
 
-See the end-to-end pipeline on one query:
+See the end-to-end pipeline on one query -- it prints the plan at each stage, the
+generated Python, the result, the §7 differential check against the interpreter, and
+the timings:
 
 ```bash
-python demo.py
+python demo.py --query q10     # --list shows all twenty; a bare SQL string works too
 ```
 
 ## Layout and ownership
