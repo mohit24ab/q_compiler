@@ -340,18 +340,61 @@ def read_csv(path) -> list[Measurement]:
         return [Measurement(**{k: parse(k, v) for k, v in row.items()}) for row in csv.DictReader(f)]
 
 
+def printable(text: str, stream=None) -> str:
+    """``text`` with anything the stream cannot encode spelled out instead.
+
+    The reports carry join notation and section signs, and a Windows console is
+    cp1252, where printing one raises UnicodeEncodeError. Writing the file always
+    uses utf-8; it is only the echo to the terminal that has to give way.
+    """
+    encoding = getattr(stream or sys.stdout, "encoding", None) or "utf-8"
+    return text.encode(encoding, "backslashreplace").decode(encoding, "replace")
+
+
 def environment() -> dict[str, str]:
     import numpy
     return {"python": platform.python_version(), "numpy": numpy.__version__,
             "platform": platform.platform(), "processor": platform.processor() or "unknown"}
 
 
-def write_markdown(results: list[Measurement], path, env: dict | None = None) -> Path:
+def existing_provenance(path) -> list[str] | None:
+    """The bullet block of a summary already written at ``path``, verbatim.
+
+    Those bullets say where the numbers came from, and they get added to by hand:
+    the data scale, which optimizer built the plans, what has changed since. A
+    re-summarize happens on whatever machine is handy, so re-deriving them there
+    would stamp that machine over the one that measured the run and drop the notes
+    with no warning. They are carried across instead.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    bullets: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("* "):
+            bullets.append(line)
+        elif bullets and line.startswith(("  ", "\t")):
+            bullets.append(line)  # a wrapped line or nested bullet under the one above
+        elif bullets:
+            break
+    return bullets or None
+
+
+def write_markdown(results: list[Measurement], path, env: dict | None = None,
+                   keep_provenance: bool = False) -> Path:
     """The summary as a small report: where it was measured, then the table."""
     path = Path(path)
     first = results[0]
-    env = env or environment()
     optimizers = sorted({m.optimizer for m in results} - {"none"})
+    provenance = (existing_provenance(path) if keep_provenance and env is None else None)
+    if provenance is None:
+        env = env or environment()
+        provenance = [
+            f"* optimizer: {', '.join(optimizers) or 'none'}",
+            *[f"* {k}: {v}" for k, v in env.items()],
+            f"* every answer matches the reference interpreter: "
+            f"{'yes' if all(m.matches_reference for m in results) else 'NO'}",
+        ]
     lines = [
         f"# Benchmark results: scale `{first.scale}`",
         "",
@@ -360,10 +403,7 @@ def write_markdown(results: list[Measurement], path, env: dict | None = None) ->
         f"(after a warm-up), configurations interleaved round-robin. Times are execution "
         f"only: binding, optimizing and code generation happen once, beforehand.",
         "",
-        f"* optimizer: {', '.join(optimizers) or 'none'}",
-        *[f"* {k}: {v}" for k, v in env.items()],
-        f"* every answer matches the reference interpreter: "
-        f"{'yes' if all(m.matches_reference for m in results) else 'NO'}",
+        *provenance,
         "",
         "Ratios are speedups (higher is better). `optimizer` compares unoptimized with "
         "optimized plans on the same engine, `compilation` compares the interpreter with "
@@ -390,8 +430,9 @@ def main(argv=None) -> int:
     ap.add_argument("--summarize", metavar="CSV", help="only rewrite the .md summary of a CSV")
     args = ap.parse_args(argv)
     if args.summarize:
-        md = write_markdown(read_csv(args.summarize), Path(args.summarize).with_suffix(".md"))
-        print(md.read_text(encoding="utf-8"))
+        md = write_markdown(read_csv(args.summarize), Path(args.summarize).with_suffix(".md"),
+                            keep_provenance=True)
+        print(printable(md.read_text(encoding="utf-8")))
         return 0
 
     def progress(name, rows):
@@ -406,7 +447,7 @@ def main(argv=None) -> int:
     out = write_csv(results, args.out or ROOT / "bench" / "results" / f"runner_{args.scale}.csv")
     md = write_markdown(results, out.with_suffix(".md"))
     print(f"\nwrote {len(results)} rows to {out}, summary in {md}\n")
-    print(summary(results))
+    print(printable(summary(results)))
     wrong = [f"{m.query}/{m.configuration}" for m in results if not m.matches_reference]
     if wrong:
         print(f"\nWRONG ANSWERS: {wrong}", file=sys.stderr)

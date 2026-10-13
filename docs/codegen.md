@@ -388,10 +388,12 @@ What the numbers say:
   differ by up to 1.13x (q06, 1.6 vs 1.8 ms) and 1.10x (q05). Treat differences under
   about 1.15x as noise; q17's 0.97x fusion ratio is one of them.
 * **Since this run:**
-  * B's `e8ca91e` stops reordering joins under a Sort or Limit (`keep_row_order`), so
+  * B's `e8ca91e` stopped reordering joins under a Sort or Limit (`keep_row_order`), so
     tied rows keep their order for the row-for-row ORDER BY check. Of the 20 queries
-    only q10's plan changes, and it runs 1.6x slower in both engines (timed alternately
-    in one process).
+    only q10's plan changed, and it ran 1.6x slower in both engines (timed alternately
+    in one process). The integrated optimizer narrows that guard to orderings it cannot
+    prove total, and q10's ORDER BY ends in a key, so q10 is back to the plan measured
+    here and this table stands as the shipped one.
   * A's tie-break key on q11 makes no measurable difference.
   * Both are recorded in `runner_bench.md`. The table itself is the one consistent
     2-hour session: a re-measurement on another day swung up to 3x with the laptop's

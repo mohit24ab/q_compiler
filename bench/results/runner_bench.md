@@ -3,18 +3,22 @@
 Produced by `python -m bench.runner --scale bench`; raw numbers in `runner_bench.csv`. Median of 5 timed runs per configuration (after a warm-up), configurations interleaved round-robin. Times are execution only: binding, optimizing and code generation happen once, beforehand.
 
 * data: 1,000,000 lineitem / 250,000 orders / 50,000 customer / 50,000 part rows (`bench/data/generate.py`, seed 42)
-* optimizer: optimizer.optimize from Person B's `b/phase-7-ablation` @ 454744a, run on main @ 0993653 + `c/order-by-aggregate` (B's latest is not on main yet)
+* optimizer: optimizer.optimize from Person B's `b/phase-7-ablation` @ 454744a, run on main @ 0993653 + `c/order-by-aggregate`; all of that is on main now
 * python: 3.13.7
 * numpy: 2.5.3
 * platform: Windows-11-10.0.26200-SP0
 * processor: Intel64 Family 6 Model 186 Stepping 2, GenuineIntel
 * every answer matches the reference interpreter: yes
-* since this run (checked 10 Oct; the table is not re-measured, see below):
-  * B's `e8ca91e` keeps join order under Sort/Limit (`keep_row_order`). Only q10's
-    optimized plan changes: `(lineitem ⋈ orders) ⋈ customer` instead of
-    `lineitem ⋈ (orders ⋈ customer)`. Timed alternately in one process, it is **1.6x
-    slower** in both engines (compiled 448 → 715 ms, interpreted 6.2 → 9.9 s), with
-    the same answer.
+* since this run (checked 10 Oct, then again when the branches were integrated; the
+  table is not re-measured, see below):
+  * B's `e8ca91e` kept join order under any Sort or Limit (`keep_row_order`), which
+    cost q10 the plan these rows were measured with: `(lineitem ⋈ orders) ⋈ customer`
+    instead of `lineitem ⋈ (orders ⋈ customer)`. Timed alternately in one process that
+    was **1.6x slower** in both engines (compiled 448 → 715 ms, interpreted 6.2 → 9.9 s)
+    for the same answer. The integrated optimizer narrows that guard to orderings it
+    cannot prove total (`optimizer/keys.py`), and q10 orders by `l.extended_price DESC,
+    l.id` where `l.id` is lineitem's key -- so it plans `lineitem ⋈ (orders ⋈ customer)`
+    again. These rows describe the shipped plan; the 1.6x never reached main.
   * A's q11 gained a tie-break key (`ORDER BY quantity DESC, l.id`). Timed the same
     way, no measurable difference.
   * Re-measuring q10 and q11 on 10 Oct swung up to 3x with the laptop's CPU state,

@@ -1,5 +1,6 @@
 """Phase C6: the benchmark runner and the alias bridge it binds queries through."""
 import csv
+import io
 import types
 
 import pytest
@@ -165,3 +166,45 @@ def test_csv_round_trip_and_markdown_report(tiny_rows, tmp_path):
     assert "| geomean" in md and "python:" in md
     assert runner.main(["--summarize", str(path)]) == 0
     assert (tmp_path / "r.md").exists()
+
+
+def test_summarize_keeps_the_provenance_it_found(tiny_rows, tmp_path):
+    # The bullets say which machine measured the run, and they get added to by hand.
+    # --summarize rebuilds the table wherever it is convenient, so it must not
+    # restamp them with the machine doing the rebuilding.
+    csv_path = runner.write_csv(tiny_rows, tmp_path / "r.csv")
+    md_path = tmp_path / "r.md"
+    runner.write_markdown(runner.read_csv(csv_path), md_path)
+
+    kept = ["* data: 1,000,000 lineitem rows (seed 42)",
+            "* python: 3.11.9",
+            "* since this run:",
+            "  * q10 reorders again now that the ordering is total"]
+    before = md_path.read_text(encoding="utf-8").splitlines()
+    head = before[:next(i for i, l in enumerate(before) if l.startswith("* "))]
+    rest = before[next(i for i, l in enumerate(before) if l.startswith("Ratios are")):]
+    md_path.write_text(chr(10).join(head + kept + [""] + rest), encoding="utf-8")
+
+    assert runner.main(["--summarize", str(csv_path)]) == 0
+    rebuilt = md_path.read_text(encoding="utf-8")
+    for line in kept:
+        assert line in rebuilt
+    assert "| geomean" in rebuilt             # the table was rebuilt
+    assert rebuilt.count("* python:") == 1    # and the bullets were not restamped
+
+    # A fresh measurement has no summary to carry across, so it describes itself.
+    fresh = runner.write_markdown(runner.read_csv(csv_path), tmp_path / "new.md")
+    assert "platform:" in fresh.read_text(encoding="utf-8")
+
+
+def test_printable_gives_way_to_a_console_that_cannot_encode_the_report():
+    # The bench summary carries join notation; a Windows console is cp1252, where
+    # printing it raises UnicodeEncodeError and takes the run's exit code with it.
+    class Console:
+        encoding = "cp1252"
+
+    joined = "q10: lineitem " + chr(8904) + " (orders " + chr(8904) + " customer)"
+    out = runner.printable(joined, Console())
+    assert chr(8904) not in out and "lineitem" in out and "orders" in out
+    out.encode("cp1252")                                   # the whole point
+    assert runner.printable(joined, io.StringIO()) == joined   # utf-8 is left alone
