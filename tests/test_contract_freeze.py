@@ -4,7 +4,7 @@ import dataclasses
 from enum import Enum
 import inspect
 import types
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import get_args, get_origin, get_type_hints
 import pytest
 
 from catalog.catalog import Catalog

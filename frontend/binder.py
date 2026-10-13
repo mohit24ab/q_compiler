@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Sequence
 import sqlglot
 from sqlglot import exp
 
@@ -11,7 +10,7 @@ from ir.nodes import Aggregate, Filter, Join, Limit, PlanNode, Project, Scan, So
 from ir.printer import format_expr
 from ir.visitor import transform_expr_post_order
 from frontend.resolver import Resolver, SemanticError
-from frontend.typecheck import TypeChecker, SemanticTypeError
+from frontend.typecheck import TypeChecker
 
 Scope = Resolver
 

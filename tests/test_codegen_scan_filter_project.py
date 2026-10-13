@@ -6,7 +6,7 @@ import pyarrow as pa
 import pytest
 
 from codegen import CodegenError, compile_and_run, generate
-from runtime import Table, compare_tables, interpret
+from runtime import compare_tables, interpret
 from runtime._compat import DType, Filter, Project, UnaryOp
 
 from codegen_fixtures import (

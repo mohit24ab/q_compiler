@@ -5,7 +5,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from catalog.catalog import Catalog
-from catalog.stats import ColumnStats
 from ir.dtype import DType
 from ir.nodes import Scan
 
